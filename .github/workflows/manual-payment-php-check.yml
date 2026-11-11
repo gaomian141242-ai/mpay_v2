@@ -1,0 +1,29 @@
+name: manual-payment-php-check
+
+on:
+  push:
+    branches:
+      - feature/manual-payment-link
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: PHP syntax checks
+        run: |
+          php -l app/service/payment/manual/ManualPaymentReportPolicy.php
+          php -l app/service/payment/manual/ManualPaymentQueryReportService.php
+          php -l app/http/api/controller/cashier/ManualPaymentDeviceController.php
+          php -l app/route/api.php
+      - name: Report policy tests
+        run: php tests/manual_payment_report_policy_test.php
