@@ -300,4 +300,23 @@ unset ADMIN_PASSWORD
 if [ -n "$OLD_CONTAINER" ]; then docker update --restart=no "$OLD_CONTAINER" >/dev/null 2>&1 || true; fi
 DEPLOY_OK=1
 DB_RESET_STARTED=0
+
+# Keep only the running production image and the immediately previous rollback image.
+# Remove stale MPAY rollback containers and all older mpay-v2 image tags after success.
+for old_container in $(docker ps -aq --filter 'name=^/mpay-v2-rollback-'); do
+  old_name="$(docker inspect -f '{{.Name}}' "$old_container" | sed 's#^/##')"
+  [ "$old_name" = "$OLD_CONTAINER" ] || docker rm -f "$old_container" >/dev/null 2>&1 || true
+done
+KEEP_IMAGE_IDS="$(docker inspect -f '{{.Image}}' "$ACTIVE" 2>/dev/null || true)"
+if [ -n "$OLD_CONTAINER" ] && docker inspect "$OLD_CONTAINER" >/dev/null 2>&1; then
+  KEEP_IMAGE_IDS="$KEEP_IMAGE_IDS
+$(docker inspect -f '{{.Image}}' "$OLD_CONTAINER")"
+fi
+while read -r image_id; do
+  [ -n "$image_id" ] || continue
+  if ! printf '%s\\n' "$KEEP_IMAGE_IDS" | grep -Fxq "$image_id"; then
+    docker image rm "$image_id" >/dev/null 2>&1 || true
+  fi
+done < <(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' | awk '$1 == "mpay-v2" {print $2}' | sort -u)
+log "MPAY image cleanup complete; current and immediate rollback images retained."
 log "SUCCESS: MPAY V2 deployed. URL=$SITE_URL/admin; DB tables=$TABLE_COUNT; rollback=$BACKUP"
