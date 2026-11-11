@@ -26,16 +26,16 @@ rollback() {
   rc=$?
   if [ "$DEPLOY_OK" -eq 1 ]; then return; fi
   log "Deployment failed (exit=$rc); attempting rollback"
+  docker rm -f "$CANDIDATE" >/dev/null 2>&1 || true
+  if [ "$CANDIDATE_STARTED" -eq 1 ] || [ "$NEW_ACTIVE_STARTED" -eq 1 ]; then
+    docker rm -f "$ACTIVE" >/dev/null 2>&1 || true
+  fi
   if [ "$DB_RESET_STARTED" -eq 1 ] && [ -n "${MYSQL_CID:-}" ] && [ "${#MYSQL[@]}" -gt 0 ]; then
     log "Restoring pre-deployment MPAY database backup"
     "${MYSQL[@]}" -e "DROP DATABASE IF EXISTS mpay; CREATE DATABASE mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" >/dev/null 2>&1 || true
     if [ "$DB_BACKUP_PRESENT" -eq 1 ] && [ -s "$DB_BACKUP_FILE" ]; then
       "${MYSQL[@]}" mpay < "$DB_BACKUP_FILE" >/dev/null 2>&1 || log "WARNING: automatic database restore failed; SQL dump retained at $DB_BACKUP_FILE"
     fi
-  fi
-  docker rm -f "$CANDIDATE" >/dev/null 2>&1 || true
-  if [ "$CANDIDATE_STARTED" -eq 1 ] || [ "$NEW_ACTIVE_STARTED" -eq 1 ]; then
-    docker rm -f "$ACTIVE" >/dev/null 2>&1 || true
   fi
   if [ -n "$OLD_CONTAINER" ]; then
     if docker inspect "$OLD_CONTAINER" >/dev/null 2>&1; then
