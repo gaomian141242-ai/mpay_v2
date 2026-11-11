@@ -200,11 +200,26 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [ -n "$STATUS" ] || { docker logs "$CANDIDATE" --tail 100; fail "Install status endpoint did not become ready"; }
-printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false' >/dev/null || {
-  printf '%s\n' "$STATUS" | jq 'del(.data)' || true
-  fail "Fresh installation status was not reported; refusing to overwrite existing install"
-}
+FRESH_INSTALL=0
+if printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false' >/dev/null 2>&1; then
+  FRESH_INSTALL=1
+elif printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == true' >/dev/null 2>&1; then
+  # Previous run completed install but failed later; preserve DB/runtime and reset known deployment admin.
+  docker exec "$CANDIDATE" test -s /app/runtime/install.lock || fail "Installed database but install.lock missing"
+  docker exec "$CANDIDATE" test -s /data/keys/epay-platform-private.pem || fail "Installed database but RSA private key missing"
+  docker exec "$CANDIDATE" test -s /data/keys/epay-platform-public.pem || fail "Installed database but RSA public key missing"
+  ADMIN_HASH="$(docker exec "$CANDIDATE" php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$ADMIN_PASSWORD")"
+  [ -n "$ADMIN_HASH" ] || fail "Could not generate admin password hash"
+  "${MYSQL[@]}" -e "UPDATE mpay.ma_admin_user SET password_hash='$ADMIN_HASH', real_name='MPAY Administrator', is_super=1, status=1, updated_at=NOW() WHERE username='$ADMIN_USER';"
+  ADMIN_ROWS="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM mpay.ma_admin_user WHERE username='$ADMIN_USER' AND status=1;")"
+  [ "$ADMIN_ROWS" = "1" ] || fail "Existing installed database has no active deployment admin"
+  log "Resuming previously completed installation; database and RSA keys preserved"
+else
+  printf '%s\n' "$STATUS" | jq '{code,msg,data:{installed:.data.installed,database_installed:.data.database_installed,database_exists:.data.database_exists,core_tables:.data.core_tables}}' 2>/dev/null || true
+  fail "Install state is neither fresh nor safely resumable; refusing to overwrite data"
+fi
 
+if [ "$FRESH_INSTALL" -eq 1 ]; then
 SITE_URL="http://$SSH_HOST:18787"
 PAYLOAD="$(jq -n \
   --arg site_name "MPAY V2" --arg site_url "$SITE_URL" \
@@ -220,6 +235,7 @@ printf '%s' "$INSTALL_RESPONSE" | jq -e '.code == 200' >/dev/null || {
   printf '%s\n' "$INSTALL_RESPONSE" | jq '{code,msg}' || true
   fail "InstallService returned failure"
 }
+fi
 unset PAYLOAD DB_PASSWORD JWT_MAIN JWT_ADMIN JWT_MERCHANT
 # InstallService needs CREATE DATABASE permission; remove the temporary global privilege now.
 MYSQL_ROOT_PASSWORD="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n1)"
