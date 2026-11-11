@@ -18,6 +18,7 @@ use app\http\admin\controller\ops\MerchantNotifyTaskController;
 use app\http\admin\controller\ops\PayCallbackLogController;
 use app\http\admin\controller\ops\PaymentExceptionController;
 use app\http\admin\controller\payment\PaymentChannelController;
+use app\http\admin\controller\payment\ManualPaymentLinkController;
 use app\http\admin\controller\payment\PaymentOnboardingConfigController;
 use app\http\admin\controller\payment\PaymentPluginConfController;
 use app\http\admin\controller\payment\PaymentPluginController;
@@ -122,6 +123,12 @@ Route::group('/adminapi', function () {
         Route::get('/user/profile', [AuthController::class, 'profile'])->name('adminApiUserProfile')->setParams(['real_name' => '当前用户资料']);
         Route::post('/user/change-password', [AuthController::class, 'changePassword'])->name('adminApiUserChangePassword')->setParams(['real_name' => '修改当前管理员密码']);
         Route::get('/dashboard/overview', [AdminDashboardController::class, 'overview'])->name('adminApiDashboardOverview')->setParams(['real_name' => '运营首页总览']);
+
+        // 固定金额手动支付链接：继承本组 AdminAuthMiddleware 管理员认证。
+        Route::group('/manual-payment-links', function () {
+            Route::get('', [ManualPaymentLinkController::class, 'index'])->name('adminApiManualPaymentLinksIndex')->setParams(['real_name' => '手动支付链接库存']);
+            Route::post('/import', [ManualPaymentLinkController::class, 'import'])->name('adminApiManualPaymentLinksImport')->setParams(['real_name' => '导入手动支付链接']);
+        });
 
         // 商户档案
         Route::group('/merchants', function () {
