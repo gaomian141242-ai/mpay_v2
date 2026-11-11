@@ -65,11 +65,76 @@ REDIS_HOST="$(docker inspect -f '{{.Name}}' "$REDIS_CID" | sed 's#^/##')"
 
 MYSQL_ROOT_PASSWORD="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n1)"
 [ -n "$MYSQL_ROOT_PASSWORD" ] || fail "Cannot obtain MySQL root credential from container environment"
+# 1Panel may inject the Redis password as a command argument or keep it in
+# the mounted redis.conf / application .env instead of the container environment.
 REDIS_PASSWORD="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$REDIS_CID" | sed -n 's/^REDIS_PASSWORD=//p' | head -n1)"
+
+mapfile -t REDIS_CMD_ARGS < <(docker inspect "$REDIS_CID" | jq -r '.[0].Config | ((.Entrypoint // []) + (.Cmd // []))[]?')
+if [ -z "$REDIS_PASSWORD" ]; then
+  for ((i=0; i<${#REDIS_CMD_ARGS[@]}; i++)); do
+    arg="${REDIS_CMD_ARGS[$i]}"
+    case "$arg" in
+      --requirepass)
+        if [ $((i + 1)) -lt ${#REDIS_CMD_ARGS[@]} ]; then REDIS_PASSWORD="${REDIS_CMD_ARGS[$((i + 1))]}"; fi
+        break
+        ;;
+      --requirepass=*)
+        REDIS_PASSWORD="${arg#*=}"
+        break
+        ;;
+    esac
+  done
+fi
+
+# Look for the active Redis config path from the container command, then
+# check common paths used by official Redis and 1Panel images.
+REDIS_CONFIG_FILES=(/etc/redis/redis.conf /usr/local/etc/redis/redis.conf /etc/redis.conf /data/redis.conf)
+for arg in "${REDIS_CMD_ARGS[@]}"; do
+  case "$arg" in
+    /*.conf) REDIS_CONFIG_FILES+=("$arg") ;;
+  esac
+done
+if [ -z "$REDIS_PASSWORD" ]; then
+  REDIS_PASSWORD="$(docker exec "$REDIS_CID" sh -c '
+    for file do
+      [ -r "$file" ] || continue
+      awk '''tolower($1) == "requirepass" {
+        $1 = ""; sub(/^[[:space:]]+/, "");
+        gsub(/^["\\047]|["\\047]$/, "");
+        print; exit
+      }''' "$file"
+    done
+  ' sh "${REDIS_CONFIG_FILES[@]}" 2>/dev/null | head -n1 || true)"
+fi
+
+# 1Panel stores app-level variables beside the mounted data/config directory.
+if [ -z "$REDIS_PASSWORD" ]; then
+  while IFS= read -r mount_source; do
+    [ -n "$mount_source" ] || continue
+    dir="$mount_source"
+    for _ in 1 2 3; do
+      dir="$(dirname "$dir")"
+      for env_file in "$dir/.env" "$dir/.env.production"; do
+        [ -r "$env_file" ] || continue
+        value="$(sed -n -E 's/^(REDIS_PASSWORD|REDIS_PASS|REDIS_ROOT_PASSWORD)=//p' "$env_file" | head -n1)"
+        value="${value%\"}"; value="${value#\"}"
+        value="${value%\'}"; value="${value#\'}"
+        if [ -n "$value" ]; then REDIS_PASSWORD="$value"; break 2; fi
+      done
+    done
+  done < <(docker inspect "$REDIS_CID" | jq -r '.[0].Mounts[]?.Source')
+fi
+
 if [ -z "$REDIS_PASSWORD" ]; then
   if ! docker exec "$REDIS_CID" redis-cli ping 2>/dev/null | grep -q PONG; then
-    fail "Redis requires authentication but REDIS_PASSWORD was not found in container environment"
+    fail "Redis authentication is enabled, but its password could not be read from the 1Panel environment, command, or Redis config"
   fi
+fi
+
+# Fail early if a discovered password is stale or does not match the live Redis.
+if [ -n "$REDIS_PASSWORD" ]; then
+  docker exec "$REDIS_CID" redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG \
+    || fail "Redis password was discovered but authentication validation failed"
 fi
 
 DB_USER="mpay_app"
