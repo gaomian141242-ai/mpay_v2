@@ -14,6 +14,9 @@ OLD_CONTAINER=""
 CANDIDATE_STARTED=0
 NEW_ACTIVE_STARTED=0
 DEPLOY_OK=0
+DB_BACKUP_FILE="$BACKUP/mpay-before-clean.sql"
+DB_BACKUP_PRESENT=0
+DB_RESET_STARTED=0
 
 log() { printf '[MPAY-DEPLOY] %s\n' "$*"; }
 fail() { log "ERROR: $*"; exit 1; }
@@ -22,6 +25,13 @@ rollback() {
   rc=$?
   if [ "$DEPLOY_OK" -eq 1 ]; then return; fi
   log "Deployment failed (exit=$rc); attempting rollback"
+  if [ "$DB_RESET_STARTED" -eq 1 ] && [ -n "${MYSQL_ROOT_PASSWORD:-}" ] && [ -n "${MYSQL_CID:-}" ]; then
+    log "Restoring pre-deployment MPAY database backup"
+    docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot -e "DROP DATABASE IF EXISTS mpay; CREATE DATABASE mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" >/dev/null 2>&1 || true
+    if [ "$DB_BACKUP_PRESENT" -eq 1 ] && [ -s "$DB_BACKUP_FILE" ]; then
+      docker exec -i -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot mpay < "$DB_BACKUP_FILE" >/dev/null 2>&1 || log "WARNING: automatic database restore failed; SQL dump retained at $DB_BACKUP_FILE"
+    fi
+  fi
   docker rm -f "$CANDIDATE" >/dev/null 2>&1 || true
   if [ "$CANDIDATE_STARTED" -eq 1 ] || [ "$NEW_ACTIVE_STARTED" -eq 1 ]; then
     docker rm -f "$ACTIVE" >/dev/null 2>&1 || true
@@ -44,6 +54,8 @@ if [ -d "$BASE/releases/v1" ]; then
   tar -czf "$BACKUP/previous-release-v1.tgz" -C "$BASE/releases" v1
 fi
 if [ -f "$BASE/releases/v1/.env" ]; then cp -a "$BASE/releases/v1/.env" "$BACKUP/previous.env"; fi
+if [ -f "$RELEASE_DIR/.env" ]; then cp -a "$RELEASE_DIR/.env" "$BACKUP/previous-release.env"; fi
+tar -czf "$BACKUP/mpay-shared-state.tgz" -C "$SHARED" keys runtime 2>/dev/null || fail "Could not back up MPAY keys/runtime before clean install"
 for keyfile in epay-platform-private.pem epay-platform-public.pem; do
   if [ -f "$BASE/releases/v1/$keyfile" ]; then cp -a "$BASE/releases/v1/$keyfile" "$BACKUP/"; fi
 done
@@ -142,8 +154,18 @@ JWT_ADMIN="$(openssl rand -hex 32)"
 JWT_MERCHANT="$(openssl rand -hex 32)"
 
 MYSQL=(docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot --batch --skip-column-names)
-"${MYSQL[@]}" -e "CREATE DATABASE IF NOT EXISTS mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; GRANT ALL PRIVILEGES ON mpay.* TO '$DB_USER'@'%'; GRANT CREATE ON *.* TO '$DB_USER'@'%'; FLUSH PRIVILEGES;"
-unset MYSQL_ROOT_PASSWORD
+# Back up the existing MPAY schema, then recreate ONLY the mpay database.
+DB_EXISTS="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='mpay';")"
+if [ "$DB_EXISTS" = "1" ]; then
+  docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysqldump -uroot --single-transaction --routines --triggers --events mpay > "$DB_BACKUP_FILE"
+  [ -s "$DB_BACKUP_FILE" ] || fail "MPAY database backup is empty; refusing destructive reset"
+  DB_BACKUP_PRESENT=1
+fi
+DB_RESET_STARTED=1
+"${MYSQL[@]}" -e "DROP DATABASE IF EXISTS mpay; CREATE DATABASE mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; GRANT ALL PRIVILEGES ON mpay.* TO '$DB_USER'@'%'; GRANT CREATE ON *.* TO '$DB_USER'@'%'; FLUSH PRIVILEGES;"
+# Reset MPAY's install marker and platform keypair only; shared Redis and other apps are untouched.
+rm -f "$SHARED/runtime/install.lock"
+rm -f "$SHARED/keys/epay-platform-private.pem" "$SHARED/keys/epay-platform-public.pem"
 
 # InstallService writes this mounted file; three independent JWT secrets are generated per deployment.
 cat > "$RELEASE_DIR/.env" <<ENV
@@ -200,40 +222,11 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [ -n "$STATUS" ] || { docker logs "$CANDIDATE" --tail 100; fail "Install status endpoint did not become ready"; }
-# InstallLock may be left behind by an interrupted first install. The database
-# can contain ma_migrations or partially-created tables; do not require the schema
-# to be completely empty. Resume only when NONE of the four core application tables exists.
-if printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == false and .data.database_exists == false and .data.lock_file_exists == true' >/dev/null 2>&1; then
-  CORE_TABLE_COUNT="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mpay' AND table_name IN ('ma_admin_user','ma_pay_order','ma_system_config','ma_payment_plugin');")"
-  if [ "$CORE_TABLE_COUNT" = "0" ]; then
-    docker exec "$CANDIDATE" rm -f /app/runtime/install.lock
-    STATUS="$(curl -fsS http://127.0.0.1:18787/adminapi/install/status)"
-    printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false and .data.lock_file_exists == false' >/dev/null \
-      || fail "Could not clear stale install.lock after confirming core tables are absent"
-    log "Removed stale install.lock; no core application tables exist. Existing partial migration tables will be preserved and migrations resumed."
-  else
-    fail "Install lock is stale but one or more core application tables exist; refusing automatic reset"
-  fi
-fi
-
-FRESH_INSTALL=0
-if printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false' >/dev/null 2>&1; then
-  FRESH_INSTALL=1
-elif printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == true' >/dev/null 2>&1; then
-  # Previous run completed install but failed later; preserve DB/runtime and reset known deployment admin.
-  docker exec "$CANDIDATE" test -s /app/runtime/install.lock || fail "Installed database but install.lock missing"
-  docker exec "$CANDIDATE" test -s /data/keys/epay-platform-private.pem || fail "Installed database but RSA private key missing"
-  docker exec "$CANDIDATE" test -s /data/keys/epay-platform-public.pem || fail "Installed database but RSA public key missing"
-  ADMIN_HASH="$(docker exec "$CANDIDATE" php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$ADMIN_PASSWORD")"
-  [ -n "$ADMIN_HASH" ] || fail "Could not generate admin password hash"
-  "${MYSQL[@]}" -e "UPDATE mpay.ma_admin_user SET password_hash='$ADMIN_HASH', real_name='MPAY Administrator', is_super=1, status=1, updated_at=NOW() WHERE username='$ADMIN_USER';"
-  ADMIN_ROWS="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM mpay.ma_admin_user WHERE username='$ADMIN_USER' AND status=1;")"
-  [ "$ADMIN_ROWS" = "1" ] || fail "Existing installed database has no active deployment admin"
-  log "Resuming previously completed installation; database and RSA keys preserved"
-else
-  printf '%s\n' "$STATUS" | jq '{code,msg,data:{installed:.data.installed,database_installed:.data.database_installed,database_exists:.data.database_exists,core_tables:.data.core_tables}}' 2>/dev/null || true
-  fail "Install state is neither fresh nor safely resumable; refusing to overwrite data"
-fi
+printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false' >/dev/null 2>&1 || {
+  printf '%s\\n' "$STATUS" | jq '{code,msg,data:{installed:.data.installed,database_installed:.data.database_installed,database_exists:.data.database_exists,core_tables:.data.core_tables}}' 2>/dev/null || true
+  fail "Clean MPAY database did not report a fresh install state"
+}
+FRESH_INSTALL=1
 
 if [ "$FRESH_INSTALL" -eq 1 ]; then
 SITE_URL="http://$SSH_HOST:18787"
@@ -305,4 +298,5 @@ printf '%s\n' "$SOURCE_SHA" > "$SHARED/deployed-commit.txt"
 unset ADMIN_PASSWORD
 if [ -n "$OLD_CONTAINER" ]; then docker update --restart=no "$OLD_CONTAINER" >/dev/null 2>&1 || true; fi
 DEPLOY_OK=1
+DB_RESET_STARTED=0
 log "SUCCESS: MPAY V2 deployed. URL=$SITE_URL/admin; DB tables=$TABLE_COUNT; rollback=$BACKUP"
