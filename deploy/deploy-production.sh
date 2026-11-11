@@ -146,7 +146,7 @@ if [ -n "$REDIS_PASSWORD" ]; then
     || fail "Redis password was discovered but authentication validation failed"
 fi
 
-DB_USER="mpay_app"
+DB_USER="mpay_$(openssl rand -hex 6)"
 DB_PASSWORD="$(openssl rand -hex 32)"
 ADMIN_USER="admin"
 ADMIN_PASSWORD="$(openssl rand -hex 20)"
