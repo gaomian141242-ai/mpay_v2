@@ -108,42 +108,49 @@ jobs:
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
             "cd /opt/mpay-v2 && sha256sum -c '${ARCHIVE_NAME}.sha256' && tar -tzf '${ARCHIVE_NAME}' > /dev/null && echo 'MPAY V2 archive upload and verification passed.'"
 
-      - name: Read-only production preflight
+      - name: Read-only production inventory
         env:
           SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          echo "=== Host ==="
+          echo "=== HOST ==="
           hostname
-          echo "=== Docker availability ==="
-          if ! command -v docker >/dev/null 2>&1; then
-            echo "Docker is not installed or not in PATH."
-            exit 0
-          fi
-          docker info --format 'Docker={{.ServerVersion}}'
-          echo "=== MPAY containers ==="
-          docker ps -a --filter 'name=mpay' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-          if docker inspect mpay-v2-php >/dev/null 2>&1; then
-            echo "=== Current mpay-v2-php container (non-secret metadata only) ==="
-            docker inspect --format 'Image={{.Config.Image}} State={{.State.Status}} Restart={{.HostConfig.RestartPolicy.Name}}' mpay-v2-php
-            docker inspect --format 'Ports={{json .HostConfig.PortBindings}}' mpay-v2-php
-            docker inspect --format 'Mounts={{range .Mounts}}{{.Source}} -> {{.Destination}}; {{end}}' mpay-v2-php
-            docker inspect --format 'Networks={{range $name, $cfg := .NetworkSettings.Networks}}{{$name}} {{end}}' mpay-v2-php
-            docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mpay-v2-php | sed 's/=.*//' | sort -u | sed 's/^/Env key: /'
-          else
-            echo "Container mpay-v2-php not found."
-          fi
-          echo "=== Existing MPAY environment files (paths and permissions only) ==="
-          find /opt/mpay-v2 /opt -maxdepth 4 -type f -name '.env' -printf '%p mode=%m owner=%u:%g\n' 2>/dev/null | sort -u | head -50 || true
-          echo "=== Candidate shared directories ==="
-          for d in /opt/mpay-v2 /opt/mpay-v2/shared /opt/mpay-v2/releases /opt/mpay-v2/shared/runtime; do
-            if [ -d "$d" ]; then stat -c '%A %U:%G %n' "$d"; fi
+          date -Is
+          echo "=== DOCKER VERSION ==="
+          docker info --format 'Docker={{.ServerVersion}} Root={{.DockerRootDir}}'
+          echo "=== ALL CONTAINERS ==="
+          docker ps -a --no-trunc --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo "=== CONTAINER DETAILS (NO SECRET VALUES) ==="
+          for id in $(docker ps -aq); do
+            name=$(docker inspect -f '{{.Name}}' "$id" | sed 's#^/##')
+            echo "--- $name ---"
+            docker inspect --format 'Image={{.Config.Image}} State={{.State.Status}} Restart={{.HostConfig.RestartPolicy.Name}} NetworkMode={{.HostConfig.NetworkMode}}' "$id"
+            docker inspect --format 'Ports={{json .HostConfig.PortBindings}}' "$id"
+            docker inspect --format 'Mounts={{range .Mounts}}{{.Type}}:{{.Source}} -> {{.Destination}} (RW={{.RW}}); {{end}}' "$id"
+            docker inspect --format 'Networks={{range $name, $cfg := .NetworkSettings.Networks}}{{$name}} {{end}}' "$id"
+            docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" | sed 's/=.*//' | sort -u | sed 's/^/Env key: /'
+            docker inspect --format '{{range $k, $v := .Config.Labels}}{{if or (contains $k "1panel") (contains $k "compose")}}{{printf "%s=%s\n" $k $v}}{{end}}{{end}}' "$id" || true
           done
-          echo "=== Docker networks ==="
-          docker network ls --format 'table {{.Name}}\t{{.Driver}}' || true
-          echo "=== Existing MPAY staging archives ==="
+          echo "=== DOCKER NETWORKS ==="
+          docker network ls
+          echo "=== DOCKER VOLUMES ==="
+          docker volume ls
+          echo "=== MPAY DIRECTORY TREE (NAMES, MODES, SIZES ONLY) ==="
+          for d in /opt/mpay-v2 /opt/mpay-v2/releases /opt/mpay-v2/releases/v1 /opt/mpay-v2/shared; do
+            if [ -d "$d" ]; then
+              echo "--- $d ---"
+              find "$d" -maxdepth 3 -printf '%y %m %u:%g %s %p\n' 2>/dev/null | sort | head -250
+            fi
+          done
+          echo "=== ENV FILE PATHS ONLY ==="
+          find /opt/mpay-v2 -maxdepth 6 -type f -name '.env' -printf '%p mode=%m owner=%u:%g size=%s\n' 2>/dev/null | sort || true
+          echo "=== COMPOSE AND DOCKER CONFIG PATHS ==="
+          find /opt/mpay-v2 /opt/1panel/apps -maxdepth 7 -type f \( -iname 'docker-compose.yml' -o -iname 'docker-compose.yaml' -o -iname 'compose.yml' -o -iname 'compose.yaml' -o -iname 'Dockerfile' \) -printf '%p mode=%m owner=%u:%g size=%s\n' 2>/dev/null | sort | head -200 || true
+          echo "=== LISTENING TCP PORTS ==="
+          ss -lntp 2>/dev/null | head -100 || true
+          echo "=== RECENT MPAY ARCHIVES ==="
           find /opt/mpay-v2 -maxdepth 1 -type f -name 'mpay-v2-*.tgz' -printf '%f %s bytes\n' 2>/dev/null | sort | tail -10 || true
-          echo "Read-only preflight complete. No .env, database, container, or running files were changed."
+          echo "Read-only inventory complete. No application files, .env values, database, volumes, networks, or containers were changed."
           REMOTE
