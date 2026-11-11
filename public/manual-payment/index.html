@@ -43,22 +43,21 @@
     message('尚未确认到账，请勿重复支付。确认服务接入后可在此查询结果。');
   }
   if(!/^[A-Za-z0-9_-]{1,64}$/.test(payNo)){message('支付单号无效',true);return;}
-  get('/api/cashier/pay-order').then(data=>{
-    if(data?.presentation?.pay_product!=='manual_payment_link') throw new Error('不是手动支付链接订单');
-    const url=data?.presentation?.pay_params?.payment_url||'';
+  get('/api/manual-payment/detail').then(data=>{
+    const url=data?.payment_url||'';
     const parsed=new URL(url);
     if(parsed.protocol!=='https:' || parsed.username || parsed.password) throw new Error('支付链接无效');
     paymentUrl=parsed.href;
-    amount.textContent='¥ '+(Number(data.order.amount)/100).toFixed(2);
-    pay.disabled=Number(data.order.status)!==1 && Number(data.order.status)!==0;
+    amount.textContent='¥ '+(Number(data.amount_cents)/100).toFixed(2);
+    pay.disabled=Number(data.status)!==1 && Number(data.status)!==0;
     done.disabled=pay.disabled;
-    if(pay.disabled) handleStatus(Number(data.order.status)); else message('请点击支付，完成后返回本页查询状态');
+    if(pay.disabled) handleStatus(Number(data.status)); else message('请点击支付，完成后返回本页查询状态');
   }).catch(e=>message(e.message,true));
   pay.addEventListener('click',()=>{if(paymentUrl) window.open(paymentUrl,'_blank','noopener,noreferrer');});
   done.addEventListener('click',async()=>{
     done.disabled=true;
     message('正在查询系统支付状态…');
-    try{const data=await get('/api/cashier/pay-order-status');handleStatus(Number(data.status));if([0,1].includes(Number(data.status)))done.disabled=false;}
+    try{const data=await get('/api/manual-payment/status');handleStatus(Number(data.status));if([0,1].includes(Number(data.status)))done.disabled=false;}
     catch(e){message(e.message,true);done.disabled=false;}
   });
 })();
