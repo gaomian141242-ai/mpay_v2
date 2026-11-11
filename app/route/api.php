@@ -4,6 +4,7 @@ use Webman\Route;
 use app\common\middleware\Cors;
 use app\http\api\controller\cashier\CashierController;
 use app\http\api\controller\cashier\ManualPaymentCheckoutController;
+use app\http\api\controller\cashier\ManualPaymentDeviceController;
 use app\http\api\controller\epay\EpayV1Controller;
 use app\http\api\controller\epay\EpayV2Controller;
 use app\http\api\controller\payment\PaymentOnboardingNotifyController;
@@ -50,6 +51,9 @@ Route::group('/api/manual-payment', function () {
     Route::get('/status', [ManualPaymentCheckoutController::class, 'status'])->name('manualPaymentStatus');
     Route::post('/request-query', [ManualPaymentCheckoutController::class, 'requestQuery'])->name('manualPaymentRequestQuery');
 })->middleware([Cors::class]);
+
+// Go/Aardio 设备专用任务领取，认证在控制器中执行；不开放公共 CORS。
+Route::post('/api/manual-device/claim', [ManualPaymentDeviceController::class, 'claim'])->name('manualDeviceClaim');
 
 // 收银台接口路由。
 Route::group('/api/cashier', function () {
