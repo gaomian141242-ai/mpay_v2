@@ -161,7 +161,7 @@ jobs:
           if [ -n "$MYSQL_CID" ] && [ -f "$ENV_FILE" ]; then
             DB_NAME=$(awk -F= '$1 == "DB_DATABASE" {sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); gsub(/^["\047]|["\047]$/, ""); print; exit}' "$ENV_FILE")
             ROOT_PW=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n 1)
-            if [[ "$DB_NAME" =~ ^[A-Za-z0-9_\$-]+$ ]]; then
+            if [[ "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
               if [ -n "$ROOT_PW" ]; then
                 MYSQL=(docker exec -e "MYSQL_PWD=$ROOT_PW" "$MYSQL_CID" mysql -uroot -N -B)
               else
