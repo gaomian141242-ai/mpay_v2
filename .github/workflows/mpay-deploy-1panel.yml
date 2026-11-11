@@ -34,7 +34,8 @@ jobs:
           set -euo pipefail
           find app config support database -type f -name '*.php' -print0 |
             xargs -0 -r -n1 -P4 php -l > /dev/null
-          echo "PHP syntax checks passed."
+          bash -n deploy/deploy-production.sh
+          echo "PHP and deployment shell syntax checks passed."
 
       - name: Resolve Composer lock and install production dependencies
         run: |
@@ -63,7 +64,7 @@ jobs:
             --exclude='./.env' \
             -czf "${ARCHIVE_NAME}" \
             app config database deploy public support vendor \
-            composer.json composer.lock webman start.php .env.example
+            composer.json composer.lock webman start.php .env.example .dockerignore
           tar -tzf "${ARCHIVE_NAME}" > /dev/null
           sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
           cat "${ARCHIVE_NAME}.sha256"
