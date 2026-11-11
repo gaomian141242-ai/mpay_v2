@@ -1,4 +1,4 @@
-name: MPAY V2 1Panel staging upload
+name: MPAY V2 SSH server preflight
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  package-and-upload:
+  preflight:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -17,16 +17,40 @@ jobs:
       - name: Verify PHP syntax
         run: |
           set -euo pipefail
-          find app config support database -type f -name '*.php' -print0 | xargs -0 -n1 -P4 php -l > /dev/null
-      - name: Package deployable source
+          find app config support database -type f -name '*.php' -print0 | xargs -0 -r -n1 -P4 php -l > /dev/null
+      - name: Configure verified SSH
+        env:
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.MPAY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.MPAY_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          tar --exclude=.git --exclude=.github --exclude=.env --exclude=runtime --exclude=vendor -czf /tmp/mpay-v2-release.tgz .
-          mv /tmp/mpay-v2-release.tgz mpay-v2-release.tgz
-      - name: Upload release archive to 1Panel (no activation)
+          test -n "$SSH_HOST" && test -n "$SSH_PRIVATE_KEY" && test -n "$SSH_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/mpay_deploy
+          chmod 600 ~/.ssh/mpay_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -lf ~/.ssh/known_hosts
+      - name: Read-only server environment check
         env:
-          PANEL_URL: ${{ secrets.PANEL_URL }}
-          PANEL_API_KEY: ${{ secrets.PANEL_API_KEY }}
-          PANEL_V: ${{ vars.PANEL_V }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-        run: bash .github/scripts/deploy-mpay.sh
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -p 22 "root@${SSH_HOST}" 'bash -s' <<'REMOTE'
+          set -u
+          echo '=== OS ==='
+          . /etc/os-release && echo "$PRETTY_NAME"
+          echo '=== PHP ==='
+          command -v php && php -v | head -n 2 || true
+          echo '=== Composer ==='
+          command -v composer && composer --version || true
+          echo '=== PHP extensions ==='
+          if command -v php >/dev/null; then php -m | grep -Ei '^(pdo_mysql|redis|mbstring|zip|xml|gd|fileinfo|openssl|pcntl|posix)$' || true; fi
+          echo '=== Services ==='
+          for s in mysql mariadb redis-server docker; do systemctl is-active "$s" 2>/dev/null || true; done
+          echo '=== Deployment path ==='
+          if [ -e /opt/mpay-v2 ]; then ls -ld /opt/mpay-v2; else echo '/opt/mpay-v2 not present'; fi
+          echo 'Preflight only: no files uploaded, no services restarted, no database changes.'
+          REMOTE
