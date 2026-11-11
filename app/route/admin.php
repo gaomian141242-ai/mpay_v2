@@ -128,6 +128,7 @@ Route::group('/adminapi', function () {
         Route::group('/manual-payment-links', function () {
             Route::get('', [ManualPaymentLinkController::class, 'index'])->name('adminApiManualPaymentLinksIndex')->setParams(['real_name' => '手动支付链接库存']);
             Route::post('/import', [ManualPaymentLinkController::class, 'import'])->name('adminApiManualPaymentLinksImport')->setParams(['real_name' => '导入手动支付链接']);
+            Route::post('/import-xls', [ManualPaymentLinkController::class, 'importXls'])->name('adminApiManualPaymentLinksImportXls')->setParams(['real_name' => '上传WPS支付链接表格']);
         });
 
         // 商户档案
