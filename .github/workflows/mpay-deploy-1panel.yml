@@ -83,9 +83,9 @@ jobs:
           test -n "${SSH_HOST}" && test -n "${SSH_PRIVATE_KEY}" && test -n "${SSH_KNOWN_HOSTS}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/mpay_deploy
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/mpay_deploy
           chmod 600 ~/.ssh/mpay_deploy
-          printf '%s\\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           ssh-keygen -lf ~/.ssh/known_hosts
 
@@ -127,7 +127,7 @@ jobs:
           }
           with open(".env.deploy", "w", encoding="utf-8") as f:
               for key, value in values.items():
-                  f.write(f"{key}={json.dumps(value, ensure_ascii=False)}\\n")
+                  f.write(f"{key}={json.dumps(value, ensure_ascii=False)}\n")
           os.chmod(".env.deploy", 0o600)
           PY
 
