@@ -56,9 +56,23 @@
   pay.addEventListener('click',()=>{if(paymentUrl) window.open(paymentUrl,'_blank','noopener,noreferrer');});
   done.addEventListener('click',async()=>{
     done.disabled=true;
-    message('正在查询系统支付状态…');
-    try{const data=await get('/api/manual-payment/status');handleStatus(Number(data.status));if([0,1].includes(Number(data.status)))done.disabled=false;}
-    catch(e){message(e.message,true);done.disabled=false;}
+    message('正在提交付款核实请求…');
+    try {
+      const response=await fetch('/api/manual-payment/request-query',{
+        method:'POST',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:new URLSearchParams({pay_no:payNo}).toString()
+      });
+      if(!response.ok) throw new Error('提交核实请求失败');
+      const json=await response.json();
+      if(json.code!==200 && json.code!==0) throw new Error(json.msg||'提交核实请求失败');
+      const result=json.data||{};
+      if(Number(result.order_status)===2){handleStatus(2);return;}
+      message('已提交查询任务（'+String(result.task_status||'pending')+'），等待设备核实到账。请勿重复支付。');
+    } catch(e) {
+      message(e.message||'请求失败，请稍后重试',true);
+      done.disabled=false;
+    }
   });
 })();
 </script>
