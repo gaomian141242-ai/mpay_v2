@@ -18,6 +18,10 @@ return new class {
      */
     public function run(\PDO $pdo, array $context = []): array
     {
+        if (in_array(strtolower(trim((string) getenv('MPAY_SKIP_DEFAULT_MERCHANT_SEEDER'))), ['1', 'true', 'yes', 'on'], true)) {
+            return ['skipped' => true, 'reason' => 'production deployment'];
+        }
+
         $this->seedGroup($pdo);
         $this->seedMerchant($pdo);
         $this->seedMerchantAccount($pdo);
