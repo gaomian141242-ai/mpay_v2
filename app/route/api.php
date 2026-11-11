@@ -3,6 +3,7 @@
 use Webman\Route;
 use app\common\middleware\Cors;
 use app\http\api\controller\cashier\CashierController;
+use app\http\api\controller\cashier\ManualPaymentCheckoutController;
 use app\http\api\controller\epay\EpayV1Controller;
 use app\http\api\controller\epay\EpayV2Controller;
 use app\http\api\controller\payment\PaymentOnboardingNotifyController;
@@ -42,6 +43,12 @@ Route::group('/payment', function () use ($serveCashierApp) {
     Route::get('', $serveCashierApp)->name('paymentIndex')->setParams(['real_name' => '支付页首页']);
     Route::any('/{path:.+}', $serveCashierApp)->name('paymentDetail')->setParams(['real_name' => '支付页详情']);
 });
+
+// 手动支付独立只读接口，与 MPAY 原收银台 API 分离。
+Route::group('/api/manual-payment', function () {
+    Route::get('/detail', [ManualPaymentCheckoutController::class, 'detail'])->name('manualPaymentDetail');
+    Route::get('/status', [ManualPaymentCheckoutController::class, 'status'])->name('manualPaymentStatus');
+})->middleware([Cors::class]);
 
 // 收银台接口路由。
 Route::group('/api/cashier', function () {
