@@ -12,6 +12,7 @@ CANDIDATE="mpay-v2-candidate"
 ACTIVE="mpay-v2-php"
 OLD_CONTAINER=""
 CANDIDATE_STARTED=0
+NEW_ACTIVE_STARTED=0
 DEPLOY_OK=0
 
 log() { printf '[MPAY-DEPLOY] %s\n' "$*"; }
@@ -22,7 +23,7 @@ rollback() {
   if [ "$DEPLOY_OK" -eq 1 ]; then return; fi
   log "Deployment failed (exit=$rc); attempting rollback"
   docker rm -f "$CANDIDATE" >/dev/null 2>&1 || true
-  if [ "$CANDIDATE_STARTED" -eq 1 ]; then
+  if [ "$CANDIDATE_STARTED" -eq 1 ] || [ "$NEW_ACTIVE_STARTED" -eq 1 ]; then
     docker rm -f "$ACTIVE" >/dev/null 2>&1 || true
   fi
   if [ -n "$OLD_CONTAINER" ]; then
@@ -80,7 +81,7 @@ JWT_ADMIN="$(openssl rand -hex 32)"
 JWT_MERCHANT="$(openssl rand -hex 32)"
 
 MYSQL=(docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot --batch --skip-column-names)
-"${MYSQL[@]}" -e "CREATE DATABASE IF NOT EXISTS mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; GRANT ALL PRIVILEGES ON mpay.* TO '$DB_USER'@'%'; FLUSH PRIVILEGES;"
+"${MYSQL[@]}" -e "CREATE DATABASE IF NOT EXISTS mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$DB_PASSWORD'; GRANT ALL PRIVILEGES ON mpay.* TO '$DB_USER'@'%'; GRANT CREATE ON *.* TO '$DB_USER'@'%'; FLUSH PRIVILEGES;"
 unset MYSQL_ROOT_PASSWORD
 
 # InstallService writes this mounted file; three independent JWT secrets are generated per deployment.
@@ -158,7 +159,11 @@ printf '%s' "$INSTALL_RESPONSE" | jq -e '.code == 200' >/dev/null || {
   printf '%s\n' "$INSTALL_RESPONSE" | jq '{code,msg}' || true
   fail "InstallService returned failure"
 }
-unset PAYLOAD DB_PASSWORD ADMIN_PASSWORD JWT_MAIN JWT_ADMIN JWT_MERCHANT
+unset PAYLOAD DB_PASSWORD JWT_MAIN JWT_ADMIN JWT_MERCHANT
+# InstallService needs CREATE DATABASE permission; remove the temporary global privilege now.
+MYSQL_ROOT_PASSWORD="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n1)"
+docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot -e "REVOKE CREATE ON *.* FROM '$DB_USER'@'%'; FLUSH PRIVILEGES;"
+unset MYSQL_ROOT_PASSWORD
 
 docker stop "$CANDIDATE" >/dev/null
 docker rm "$CANDIDATE" >/dev/null
@@ -172,6 +177,7 @@ docker run -d --name "$ACTIVE" --restart unless-stopped \
   -v "$SHARED/keys:/data/keys" \
   -v "$SHARED/runtime:/app/runtime" \
   "$IMAGE" >/dev/null
+NEW_ACTIVE_STARTED=1
 CANDIDATE_STARTED=0
 
 # Verify HTTP app, install lock, RSA material, DB schema and all application processes.
