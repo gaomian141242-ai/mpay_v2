@@ -150,6 +150,12 @@ jobs:
             echo "MPAY .env not found at expected v1 path"
           fi
 
+          echo "=== WEBMAN INSTALL LOCK ==="
+          if [ -f /opt/mpay-v2/releases/v1/runtime/install.lock ]; then
+            stat -c 'Install lock exists: %n mode=%a owner=%U:%G size=%s' /opt/mpay-v2/releases/v1/runtime/install.lock
+          else
+            echo "Install lock missing at /opt/mpay-v2/releases/v1/runtime/install.lock"
+          fi
           echo "=== MYSQL CONTAINER AND DATABASE MIGRATION STATUS ==="
           MYSQL_CID=$(docker ps -q --filter 'name=1Panel-mysql' | head -n 1)
           if [ -n "$MYSQL_CID" ] && [ -f "$ENV_FILE" ]; then
@@ -169,6 +175,8 @@ jobs:
                 if [ "$MIGRATION_TABLE" = "1" ]; then
                   echo "ma_migrations: exists"
                   "${MYSQL[@]}" -e "SELECT version, name, batch, executed_at FROM `${DB_NAME}`.ma_migrations ORDER BY version;"
+                  echo "Core MPAY tables:"
+                  "${MYSQL[@]}" -e "SELECT table_name FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name IN ('ma_admin_user','ma_pay_order','ma_system_config','ma_payment_plugin') ORDER BY table_name;"
                 else
                   echo "ma_migrations: absent"
                 fi
@@ -178,7 +186,7 @@ jobs:
             else
               echo "DB_DATABASE is empty or contains unsupported characters; skipped DB query"
             fi
-            unset ROOT_PW MYSQL_PWD
+            unset ROOT_PW MYSQL_PWD MYSQL
           else
             echo "MySQL container or MPAY .env unavailable; skipped migration query"
           fi
