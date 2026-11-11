@@ -108,49 +108,87 @@ jobs:
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
             "cd /opt/mpay-v2 && sha256sum -c '${ARCHIVE_NAME}.sha256' && tar -tzf '${ARCHIVE_NAME}' > /dev/null && echo 'MPAY V2 archive upload and verification passed.'"
 
-      - name: Read-only production inventory
+      - name: Read-only production inventory and database preflight
         env:
           SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          echo "=== HOST ==="
-          hostname
-          date -Is
-          echo "=== DOCKER VERSION ==="
-          docker info --format 'Docker={{.ServerVersion}} Root={{.DockerRootDir}}'
-          echo "=== ALL CONTAINERS ==="
-          docker ps -a --no-trunc --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-          echo "=== CONTAINER DETAILS (NO SECRET VALUES) ==="
-          for id in $(docker ps -aq); do
-            name=$(docker inspect -f '{{.Name}}' "$id" | sed 's#^/##')
-            echo "--- $name ---"
-            docker inspect --format 'Image={{.Config.Image}} State={{.State.Status}} Restart={{.HostConfig.RestartPolicy.Name}} NetworkMode={{.HostConfig.NetworkMode}}' "$id"
-            docker inspect --format 'Ports={{json .HostConfig.PortBindings}}' "$id"
-            docker inspect --format 'Mounts={{range .Mounts}}{{.Type}}:{{.Source}} -> {{.Destination}} (RW={{.RW}}); {{end}}' "$id"
-            docker inspect --format 'Networks={{range $name, $cfg := .NetworkSettings.Networks}}{{$name}} {{end}}' "$id"
-            docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" | sed 's/=.*//' | sort -u | sed 's/^/Env key: /'
-            docker inspect --format '{{range $k, $v := .Config.Labels}}{{if or (contains $k "1panel") (contains $k "compose")}}{{printf "%s=%s\n" $k $v}}{{end}}{{end}}' "$id" || true
+
+          echo "=== PHP / WEBMAN PROCESSES ==="
+          ps -eo pid,ppid,comm | awk 'NR == 1 || tolower($0) ~ /php|webman|supervisord/'
+
+          echo "=== PHP CLI ON HOST ==="
+          if command -v php >/dev/null 2>&1; then php -v | head -n 2; else echo "No host PHP CLI"; fi
+
+          echo "=== OPENRESTY CONFIG FILES ==="
+          for base in /opt/1panel/www/conf.d /opt/1panel/apps/openresty/openresty/conf; do
+            [ -d "$base" ] || continue
+            find "$base" -type f \( -name '*.conf' -o -name 'nginx.conf' \) -print
           done
-          echo "=== DOCKER NETWORKS ==="
-          docker network ls
-          echo "=== DOCKER VOLUMES ==="
-          docker volume ls
-          echo "=== MPAY DIRECTORY TREE (NAMES, MODES, SIZES ONLY) ==="
-          for d in /opt/mpay-v2 /opt/mpay-v2/releases /opt/mpay-v2/releases/v1 /opt/mpay-v2/shared; do
-            if [ -d "$d" ]; then
-              echo "--- $d ---"
-              find "$d" -maxdepth 3 -printf '%y %m %u:%g %s %p\n' 2>/dev/null | sort | head -250
+
+          echo "=== OPENRESTY ROUTING DIRECTIVES ==="
+          while IFS= read -r file; do
+            matches=$(grep -nE '^[[:space:]]*(listen|server_name|proxy_pass|fastcgi_pass|root|include)[[:space:]]' "$file" 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              echo "--- $file ---"
+              printf '%s\n' "$matches"
             fi
-          done
-          echo "=== ENV FILE PATHS ONLY ==="
-          find /opt/mpay-v2 -maxdepth 6 -type f -name '.env' -printf '%p mode=%m owner=%u:%g size=%s\n' 2>/dev/null | sort || true
-          echo "=== COMPOSE AND DOCKER CONFIG PATHS ==="
-          find /opt/mpay-v2 /opt/1panel/apps -maxdepth 7 -type f \( -iname 'docker-compose.yml' -o -iname 'docker-compose.yaml' -o -iname 'compose.yml' -o -iname 'compose.yaml' -o -iname 'Dockerfile' \) -printf '%p mode=%m owner=%u:%g size=%s\n' 2>/dev/null | sort | head -200 || true
-          echo "=== LISTENING TCP PORTS ==="
-          ss -lntp 2>/dev/null | head -100 || true
-          echo "=== RECENT MPAY ARCHIVES ==="
-          find /opt/mpay-v2 -maxdepth 1 -type f -name 'mpay-v2-*.tgz' -printf '%f %s bytes\n' 2>/dev/null | sort | tail -10 || true
-          echo "Read-only inventory complete. No application files, .env values, database, volumes, networks, or containers were changed."
+          done < <(find /opt/1panel/www/conf.d /opt/1panel/apps/openresty/openresty/conf -type f \( -name '*.conf' -o -name 'nginx.conf' \) 2>/dev/null | sort)
+
+          echo "=== MPAY ENV FILE METADATA AND VARIABLE NAMES ==="
+          ENV_FILE=/opt/mpay-v2/releases/v1/.env
+          if [ -f "$ENV_FILE" ]; then
+            stat -c 'Path=%n Mode=%a Owner=%U:%G Size=%s' "$ENV_FILE"
+            awk -F= '/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/{key=$1; gsub(/[[:space:]]/,"",key); print key}' "$ENV_FILE" | sort -u
+            for key in DB_HOST DB_PORT DB_DATABASE REDIS_HOST REDIS_PORT REDIS_DATABASE; do
+              value=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" | tail -n 1 | sed -E 's/^["'"']//; s/["'"'][[:space:]]*$//; s/[[:space:]]+#.*$//')
+              [ -n "$value" ] && printf '%s=%s\n' "$key" "$value" || true
+            done
+          else
+            echo "MPAY .env not found at expected v1 path"
+          fi
+
+          echo "=== MYSQL CONTAINER AND DATABASE MIGRATION STATUS ==="
+          MYSQL_CID=$(docker ps -q --filter 'name=1Panel-mysql' | head -n 1)
+          if [ -n "$MYSQL_CID" ] && [ -f "$ENV_FILE" ]; then
+            DB_NAME=$(sed -n 's/^[[:space:]]*DB_DATABASE[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" | tail -n 1 | sed -E 's/^["'"']//; s/["'"'][[:space:]]*$//; s/[[:space:]]+#.*$//')
+            ROOT_PW=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n 1)
+            if [[ "$DB_NAME" =~ ^[A-Za-z0-9_\$-]+$ ]]; then
+              if [ -n "$ROOT_PW" ]; then
+                MYSQL=(docker exec -e "MYSQL_PWD=$ROOT_PW" "$MYSQL_CID" mysql -uroot -N -B)
+              else
+                MYSQL=(docker exec "$MYSQL_CID" mysql -uroot -N -B)
+              fi
+              if "${MYSQL[@]}" -e "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=''${DB_NAME}'';" | grep -Fxq "$DB_NAME"; then
+                echo "Database ${DB_NAME}: exists"
+                TABLE_COUNT=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=''${DB_NAME}'';")
+                echo "Table count: ${TABLE_COUNT}"
+                MIGRATION_TABLE=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=''${DB_NAME}'' AND table_name='ma_migrations';")
+                if [ "$MIGRATION_TABLE" = "1" ]; then
+                  echo "ma_migrations: exists"
+                  "${MYSQL[@]}" -e "SELECT version, name, batch, executed_at FROM `${DB_NAME}`.ma_migrations ORDER BY version;"
+                else
+                  echo "ma_migrations: absent"
+                fi
+              else
+                echo "Configured database ${DB_NAME}: not found in MySQL"
+              fi
+            else
+              echo "DB_DATABASE is empty or contains unsupported characters; skipped DB query"
+            fi
+            unset ROOT_PW MYSQL_PWD
+          else
+            echo "MySQL container or MPAY .env unavailable; skipped migration query"
+          fi
+
+          echo "=== RUNNING CONTAINERS AND NETWORKS ==="
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          docker network ls
+          echo "=== MPAY DIRECTORIES AND ENV PERMISSIONS ==="
+          find /opt/mpay-v2 -maxdepth 2 -type d -printf '%m %u:%g %p\n' 2>/dev/null | sort
+          find /opt/mpay-v2 -maxdepth 5 -type f -name '.env' -printf '%m %u:%g %p\n' 2>/dev/null | sort
+          echo "=== PREFLIGHT COMPLETE ==="
+          echo "Read-only only: no files, environment values, databases, containers, networks, or services were modified."
           REMOTE
