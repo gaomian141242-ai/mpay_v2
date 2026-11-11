@@ -47,13 +47,12 @@ class ManualPaymentLinkPayment extends BasePayment
         }
 
         return $this->pendingPaymentResult($order, [
-            'pay_page' => 'jump',
+            'pay_page' => 'page',
             'pay_type' => (string) ($order['pay_type_code'] ?? ''),
             'pay_product' => 'manual_payment_link',
-            'pay_action' => 'jump',
+            'pay_action' => 'manual_link',
             'pay_params' => [
-                '_page' => 'manualPaymentLink',
-                'url' => '/manual-payment/' . rawurlencode($payNo),
+                'standalone_path' => '/manual-payment/' . rawurlencode($payNo),
                 'payment_url' => (string) $bound['payment_url'],
                 'external_order_no' => (string) $bound['external_order_no'],
                 'online_order_no' => (string) $bound['online_order_no'],
