@@ -6,10 +6,9 @@ RUN apt-get update \
         libpng-dev libonig-dev libxml2-dev libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j"$(nproc)" \
-        bcmath gd mbstring pcntl pdo_mysql sockets xml zip \
+        bcmath curl gd mbstring pcntl pdo_mysql sockets xml zip \
     && pecl install redis \
     && docker-php-ext-enable redis \
-    && apt-get purge -y --auto-remove \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
