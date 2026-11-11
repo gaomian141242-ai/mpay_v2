@@ -17,6 +17,7 @@ DEPLOY_OK=0
 DB_BACKUP_FILE="$BACKUP/mpay-before-clean.sql"
 DB_BACKUP_PRESENT=0
 DB_RESET_STARTED=0
+MYSQL=()
 
 log() { printf '[MPAY-DEPLOY] %s\n' "$*"; }
 fail() { log "ERROR: $*"; exit 1; }
@@ -25,11 +26,11 @@ rollback() {
   rc=$?
   if [ "$DEPLOY_OK" -eq 1 ]; then return; fi
   log "Deployment failed (exit=$rc); attempting rollback"
-  if [ "$DB_RESET_STARTED" -eq 1 ] && [ -n "${MYSQL_ROOT_PASSWORD:-}" ] && [ -n "${MYSQL_CID:-}" ]; then
+  if [ "$DB_RESET_STARTED" -eq 1 ] && [ -n "${MYSQL_CID:-}" ] && [ "${#MYSQL[@]}" -gt 0 ]; then
     log "Restoring pre-deployment MPAY database backup"
-    docker exec -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot -e "DROP DATABASE IF EXISTS mpay; CREATE DATABASE mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" >/dev/null 2>&1 || true
+    "${MYSQL[@]}" -e "DROP DATABASE IF EXISTS mpay; CREATE DATABASE mpay CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" >/dev/null 2>&1 || true
     if [ "$DB_BACKUP_PRESENT" -eq 1 ] && [ -s "$DB_BACKUP_FILE" ]; then
-      docker exec -i -e "MYSQL_PWD=$MYSQL_ROOT_PASSWORD" "$MYSQL_CID" mysql -uroot mpay < "$DB_BACKUP_FILE" >/dev/null 2>&1 || log "WARNING: automatic database restore failed; SQL dump retained at $DB_BACKUP_FILE"
+      "${MYSQL[@]}" mpay < "$DB_BACKUP_FILE" >/dev/null 2>&1 || log "WARNING: automatic database restore failed; SQL dump retained at $DB_BACKUP_FILE"
     fi
   fi
   docker rm -f "$CANDIDATE" >/dev/null 2>&1 || true
