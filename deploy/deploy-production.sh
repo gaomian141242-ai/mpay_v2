@@ -245,13 +245,15 @@ CANDIDATE_STARTED=0
 HEALTH=""
 for _ in $(seq 1 60); do
   HEALTH="$(curl -fsS http://127.0.0.1:18787/adminapi/install/status 2>/dev/null || true)"
-  if printf '%s' "$HEALTH" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == true' >/dev/null 2>&1; then break; fi
+  if printf '%s' "$HEALTH" | jq -e '.code == 200 and .data.installed == true' >/dev/null 2>&1; then break; fi
   sleep 2
 done
-printf '%s' "$HEALTH" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == true' >/dev/null || {
+if ! printf '%s' "$HEALTH" | jq -e '.code == 200 and .data.installed == true' >/dev/null 2>&1; then
+  log "Install status endpoint response (safe fields only):"
+  printf '%s\n' "$HEALTH" | jq '{code,msg,data:{installed:.data.installed,database_installed:.data.database_installed,database_exists:.data.database_exists,core_tables:.data.core_tables}}' 2>/dev/null || printf '%s\n' "$HEALTH"
   docker logs "$ACTIVE" --tail 120
-  fail "Post-install health check failed"
-}
+  fail "Post-install HTTP/install-lock health check failed"
+fi
 docker exec "$ACTIVE" test -s /app/runtime/install.lock
 docker exec "$ACTIVE" test -s /data/keys/epay-platform-private.pem
 docker exec "$ACTIVE" test -s /data/keys/epay-platform-public.pem
@@ -259,6 +261,8 @@ docker exec "$ACTIVE" php -r 'require "/app/vendor/autoload.php"; echo "autoload
 docker top "$ACTIVE" -eo comm | grep -q php
 TABLE_COUNT="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mpay';")"
 [ "$TABLE_COUNT" -gt 0 ] || fail "Database migration produced no tables"
+INSTALL_STATE="$("${MYSQL[@]}" -e "SELECT config_value FROM mpay.ma_system_config WHERE config_key='install_status' LIMIT 1;")"
+[ "$INSTALL_STATE" = "installed" ] || fail "Database install_status is not installed"
 curl -fsS http://127.0.0.1:18787/ >/dev/null || fail "Public home route failed"
 
 # Keep credentials only in root-readable files; never print them into Actions logs.
