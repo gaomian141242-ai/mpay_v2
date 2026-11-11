@@ -4,6 +4,7 @@ namespace app\service\payment\manual;
 
 use InvalidArgumentException;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 
 /**
  * WPS Excel 97-2003 (.xls) 固定金额支付链接导入解析。
@@ -34,7 +35,7 @@ class ManualPaymentXlsReader
             }
 
             foreach (self::HEADERS as $index => $header) {
-                $value = trim((string) $sheet->getCellByColumnAndRow($index + 1, 1)->getValue());
+                $value = trim((string) $sheet->getCell(Coordinate::stringFromColumnIndex($index + 1).'1')->getValue());
                 if ($value !== $header) {
                     throw new InvalidArgumentException('XLS 第一行表头不正确，应为：'.implode('、', self::HEADERS));
                 }
@@ -44,7 +45,7 @@ class ManualPaymentXlsReader
             for ($row = 2; $row <= $lastRow; $row++) {
                 $values = [];
                 foreach (range(1, 6) as $column) {
-                    $cell = $sheet->getCellByColumnAndRow($column, $row);
+                    $cell = $sheet->getCell(Coordinate::stringFromColumnIndex($column).$row);
                     if ($cell->isFormula()) {
                         throw new InvalidArgumentException("第 {$row} 行不能包含公式");
                     }
