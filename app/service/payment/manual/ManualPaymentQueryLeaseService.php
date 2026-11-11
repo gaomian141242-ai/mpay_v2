@@ -28,6 +28,13 @@ class ManualPaymentQueryLeaseService
         if (!is_array($allowed) || !in_array($devicePort, array_map('strval', $allowed), true)) {
             throw new InvalidArgumentException('设备未获授权使用该脚本端口');
         }
+        // 当前库存只有端口字段，无法区分不同主机上的同号端口；禁止多设备共享同一端口配置。
+        foreach ($mapping as $otherDeviceId => $ports) {
+            if ((string) $otherDeviceId !== $deviceId && is_array($ports)
+                && in_array($devicePort, array_map('strval', $ports), true)) {
+                throw new InvalidArgumentException('端口被多个设备配置，无法唯一分配任务');
+            }
+        }
 
         return Db::transaction(function () use ($deviceId, $devicePort): ?array {
             $now = date('Y-m-d H:i:s');
