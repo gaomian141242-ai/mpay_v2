@@ -27,7 +27,10 @@ class ManualPaymentDeviceController extends BaseController
             return $this->fail('设备认证失败', 401);
         }
         try {
-            $task = $this->leases->claim((string) $request->post('device_id', ''));
+            $task = $this->leases->claim(
+                (string) $request->post('device_id', ''),
+                (string) $request->post('device_port', '')
+            );
             return $this->success(['task' => $task]);
         } catch (InvalidArgumentException $e) {
             return $this->fail($e->getMessage(), 422);
