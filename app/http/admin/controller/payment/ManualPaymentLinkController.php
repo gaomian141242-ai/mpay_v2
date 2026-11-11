@@ -4,6 +4,8 @@ namespace app\http\admin\controller\payment;
 
 use app\common\base\BaseController;
 use app\service\payment\manual\ManualPaymentLinkInventoryService;
+use app\service\payment\manual\ManualPaymentXlsReader;
+use Webman\Http\UploadFile;
 use InvalidArgumentException;
 use support\Request;
 use support\Response;
@@ -15,7 +17,8 @@ use support\Response;
 class ManualPaymentLinkController extends BaseController
 {
     public function __construct(
-        protected ManualPaymentLinkInventoryService $inventory
+        protected ManualPaymentLinkInventoryService $inventory,
+        protected ManualPaymentXlsReader $xlsReader
     ) {
     }
 
@@ -58,6 +61,58 @@ class ManualPaymentLinkController extends BaseController
         }
 
         return $this->success(['imported' => $count]);
+    }
+
+    /**
+     * multipart/form-data: file(.xls), source_code, channel_id。
+     */
+    public function importXls(Request $request): Response
+    {
+        $adminId = $this->currentAdminId($request);
+        if ($adminId <= 0) {
+            return $this->fail('管理员未授权', 401);
+        }
+        $file = $request->file('file');
+        if (!$file instanceof UploadFile || strtolower((string) $file->getUploadExtension()) !== 'xls') {
+            return $this->fail('只允许上传 WPS Excel 97-2003 工作簿（.xls）', 422);
+        }
+        $path = $file->getPathname();
+        if (!is_file($path) || filesize($path) > 2 * 1024 * 1024) {
+            return $this->fail('XLS 文件不能超过 2MB', 422);
+        }
+        $channelId = filter_var($request->input('channel_id'), FILTER_VALIDATE_INT);
+        $sourceCode = trim((string) $request->input('source_code', ''));
+        if ($channelId === false || $channelId === null || $channelId <= 0
+            || $sourceCode === '' || strlen($sourceCode) > 64) {
+            return $this->fail('请填写有效的通道 ID 和外部来源', 422);
+        }
+        try {
+            $items = $this->xlsReader->read($path, $sourceCode, $channelId);
+        } catch (\\PhpOffice\\PhpSpreadsheet\\Reader\\Exception $e) {
+            return $this->fail('XLS 文件格式无效或无法解析', 422);
+        } catch (InvalidArgumentException $e) {
+            return $this->fail($e->getMessage(), 422);
+        }
+
+        // 复用原导入接口的域名白名单与库存事务逻辑。
+        $hosts = array_values(array_filter(array_map(
+            static fn (string $host): string => strtolower(trim($host)),
+            explode(',', (string) env('MANUAL_PAYMENT_ALLOWED_HOSTS', ''))
+        )));
+        if ($hosts === []) {
+            return $this->fail('尚未配置允许的支付链接域名', 503);
+        }
+        foreach ($items as $item) {
+            $host = strtolower((string) parse_url($item['payment_url'], PHP_URL_HOST));
+            if ($host === '' || !in_array($host, $hosts, true)) {
+                return $this->fail('支付链接域名不在允许列表中', 422);
+            }
+        }
+        try {
+            return $this->success(['imported' => $this->inventory->import($items, $adminId)]);
+        } catch (InvalidArgumentException $e) {
+            return $this->fail($e->getMessage(), 422);
+        }
     }
 
     public function index(Request $request): Response
