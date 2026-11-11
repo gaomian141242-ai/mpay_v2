@@ -64,7 +64,7 @@ class ManualPaymentLinkController extends BaseController
     }
 
     /**
-     * multipart/form-data: file(.xls), source_code, channel_id。
+     * multipart/form-data: file(.xlsx), source_code, channel_id。
      */
     public function importXls(Request $request): Response
     {
@@ -73,12 +73,12 @@ class ManualPaymentLinkController extends BaseController
             return $this->fail('管理员未授权', 401);
         }
         $file = $request->file('file');
-        if (!$file instanceof UploadFile || strtolower((string) $file->getUploadExtension()) !== 'xls') {
-            return $this->fail('只允许上传 WPS Excel 97-2003 工作簿（.xls）', 422);
+        if (!$file instanceof UploadFile || strtolower((string) $file->getUploadExtension()) !== 'xlsx') {
+            return $this->fail('只允许上传 Excel 工作簿（.xlsx）', 422);
         }
         $path = $file->getPathname();
         if (!is_file($path) || filesize($path) > 2 * 1024 * 1024) {
-            return $this->fail('XLS 文件不能超过 2MB', 422);
+            return $this->fail('XLSX 文件不能超过 2MB', 422);
         }
         $channelId = filter_var($request->input('channel_id'), FILTER_VALIDATE_INT);
         $sourceCode = trim((string) $request->input('source_code', ''));
@@ -89,7 +89,7 @@ class ManualPaymentLinkController extends BaseController
         try {
             $items = $this->xlsReader->read($path, $sourceCode, $channelId);
         } catch (\PhpOffice\PhpSpreadsheet\Reader\Exception $e) {
-            return $this->fail('XLS 文件格式无效或无法解析', 422);
+            return $this->fail('XLSX 文件格式无效或无法解析', 422);
         } catch (InvalidArgumentException $e) {
             return $this->fail($e->getMessage(), 422);
         }
