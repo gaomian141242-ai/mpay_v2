@@ -51,7 +51,9 @@ jobs:
           test -f public/index.html
           test -f composer.lock
           test -f deploy/php.Dockerfile
-          ARCHIVE_NAME="mpay-v2-${GITHUB_SHA}.tgz"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          ARCHIVE_NAME="mpay-v2-${SOURCE_SHA}.tgz"
+          echo "SOURCE_SHA=${SOURCE_SHA}" >> "${GITHUB_ENV}"
           tar \
             --exclude='./app/command/tests' \
             --exclude='./runtime' \
@@ -70,10 +72,10 @@ jobs:
       - name: Keep build archive as a GitHub Actions artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mpay-v2-${{ github.sha }}
+          name: mpay-v2-${{ env.SOURCE_SHA }}
           path: |
-            mpay-v2-${{ github.sha }}.tgz
-            mpay-v2-${{ github.sha }}.tgz.sha256
+            mpay-v2-${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -105,3 +107,43 @@ jobs:
             root@"${SSH_HOST}":/opt/mpay-v2/
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
             "cd /opt/mpay-v2 && sha256sum -c '${ARCHIVE_NAME}.sha256' && tar -tzf '${ARCHIVE_NAME}' > /dev/null && echo 'MPAY V2 archive upload and verification passed.'"
+
+      - name: Read-only production preflight
+        env:
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo "=== Host ==="
+          hostname
+          echo "=== Docker availability ==="
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker is not installed or not in PATH."
+            exit 0
+          fi
+          docker info --format 'Docker={{.ServerVersion}}'
+          echo "=== MPAY containers ==="
+          docker ps -a --filter 'name=mpay' --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          if docker inspect mpay-v2-php >/dev/null 2>&1; then
+            echo "=== Current mpay-v2-php container (non-secret metadata only) ==="
+            docker inspect --format 'Image={{.Config.Image}} State={{.State.Status}} Restart={{.HostConfig.RestartPolicy.Name}}' mpay-v2-php
+            docker inspect --format 'Ports={{json .HostConfig.PortBindings}}' mpay-v2-php
+            docker inspect --format 'Mounts={{range .Mounts}}{{.Source}} -> {{.Destination}}; {{end}}' mpay-v2-php
+            docker inspect --format 'Networks={{range $name, $cfg := .NetworkSettings.Networks}}{{$name}} {{end}}' mpay-v2-php
+            docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' mpay-v2-php | sed 's/=.*//' | sort -u | sed 's/^/Env key: /'
+          else
+            echo "Container mpay-v2-php not found."
+          fi
+          echo "=== Existing MPAY environment files (paths and permissions only) ==="
+          find /opt/mpay-v2 /opt -maxdepth 4 -type f -name '.env' -printf '%p mode=%m owner=%u:%g\n' 2>/dev/null | sort -u | head -50 || true
+          echo "=== Candidate shared directories ==="
+          for d in /opt/mpay-v2 /opt/mpay-v2/shared /opt/mpay-v2/releases /opt/mpay-v2/shared/runtime; do
+            if [ -d "$d" ]; then stat -c '%A %U:%G %n' "$d"; fi
+          done
+          echo "=== Docker networks ==="
+          docker network ls --format 'table {{.Name}}\t{{.Driver}}' || true
+          echo "=== Existing MPAY staging archives ==="
+          find /opt/mpay-v2 -maxdepth 1 -type f -name 'mpay-v2-*.tgz' -printf '%f %s bytes\n' 2>/dev/null | sort | tail -10 || true
+          echo "Read-only preflight complete. No .env, database, container, or running files were changed."
+          REMOTE
