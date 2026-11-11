@@ -23,6 +23,9 @@ jobs:
         run: |
           php -l app/service/payment/manual/ManualPaymentReportPolicy.php
           php -l app/service/payment/manual/ManualPaymentQueryReportService.php
+          php -l app/service/payment/manual/ManualPaymentQueryLeaseService.php
+          php -l app/service/payment/manual/ManualPaymentXlsReader.php
+          php -l app/http/admin/controller/payment/ManualPaymentLinkController.php
           php -l app/http/api/controller/cashier/ManualPaymentDeviceController.php
           php -l app/route/api.php
       - name: Report policy tests
