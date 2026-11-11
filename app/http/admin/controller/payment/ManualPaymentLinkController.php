@@ -88,7 +88,7 @@ class ManualPaymentLinkController extends BaseController
         }
         try {
             $items = $this->xlsReader->read($path, $sourceCode, $channelId);
-        } catch (\\PhpOffice\\PhpSpreadsheet\\Reader\\Exception $e) {
+        } catch (\PhpOffice\PhpSpreadsheet\Reader\Exception $e) {
             return $this->fail('XLS 文件格式无效或无法解析', 422);
         } catch (InvalidArgumentException $e) {
             return $this->fail($e->getMessage(), 422);
