@@ -54,6 +54,7 @@ Route::group('/api/manual-payment', function () {
 
 // Go/Aardio 设备专用任务领取，认证在控制器中执行；不开放公共 CORS。
 Route::post('/api/manual-device/claim', [ManualPaymentDeviceController::class, 'claim'])->name('manualDeviceClaim');
+Route::post('/api/manual-device/report', [ManualPaymentDeviceController::class, 'report'])->name('manualDeviceReport');
 
 // 收银台接口路由。
 Route::group('/api/cashier', function () {
