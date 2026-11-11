@@ -4,6 +4,7 @@ namespace app\http\api\controller\cashier;
 
 use app\common\base\BaseController;
 use app\service\payment\manual\ManualPaymentCheckoutReadService;
+use app\service\payment\manual\ManualPaymentQueryRequestService;
 use InvalidArgumentException;
 use RuntimeException;
 use support\Request;
@@ -12,7 +13,8 @@ use support\Response;
 class ManualPaymentCheckoutController extends BaseController
 {
     public function __construct(
-        protected ManualPaymentCheckoutReadService $checkout
+        protected ManualPaymentCheckoutReadService $checkout,
+        protected ManualPaymentQueryRequestService $queryRequests
     ) {
     }
 
@@ -31,6 +33,19 @@ class ManualPaymentCheckoutController extends BaseController
             return $this->noStore($this->success($this->checkout->status((string) $request->get('pay_no', ''))));
         } catch (InvalidArgumentException|RuntimeException $e) {
             return $this->noStore($this->fail($e->getMessage(), 404));
+        }
+    }
+
+    public function requestQuery(Request $request): Response
+    {
+        try {
+            return $this->noStore($this->success(
+                $this->queryRequests->request((string) $request->post('pay_no', ''))
+            ));
+        } catch (InvalidArgumentException $e) {
+            return $this->noStore($this->fail($e->getMessage(), 422));
+        } catch (RuntimeException $e) {
+            return $this->noStore($this->fail($e->getMessage(), 409));
         }
     }
 
