@@ -1,4 +1,4 @@
-name: MPAY V2 build and deploy
+name: MPAY V2 build and upload
 
 on:
   workflow_dispatch:
@@ -36,14 +36,15 @@ jobs:
             xargs -0 -r -n1 -P4 php -l > /dev/null
           echo "PHP syntax checks passed."
 
-      - name: Install production Composer dependencies
+      - name: Resolve Composer lock and install production dependencies
         run: |
           set -euo pipefail
+          composer update phpoffice/phpspreadsheet --with-dependencies --no-interaction --no-progress
           composer validate --no-check-publish
           composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
           composer check-platform-reqs --no-dev
 
-      - name: Build deployment archive
+      - name: Build and checksum deployment archive
         run: |
           set -euo pipefail
           test -d vendor
@@ -62,14 +63,17 @@ jobs:
             app config database deploy public support vendor \
             composer.json composer.lock webman start.php .env.example
           tar -tzf "${ARCHIVE_NAME}" > /dev/null
-          sha256sum "${ARCHIVE_NAME}"
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+          cat "${ARCHIVE_NAME}.sha256"
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "${GITHUB_ENV}"
 
       - name: Keep build archive as a GitHub Actions artifact
         uses: actions/upload-artifact@v4
         with:
           name: mpay-v2-${{ github.sha }}
-          path: mpay-v2-${{ github.sha }}.tgz
+          path: |
+            mpay-v2-${{ github.sha }}.tgz
+            mpay-v2-${{ github.sha }}.tgz.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -83,103 +87,21 @@ jobs:
           test -n "${SSH_HOST}" && test -n "${SSH_PRIVATE_KEY}" && test -n "${SSH_KNOWN_HOSTS}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/mpay_deploy
+          printf '%s\\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/mpay_deploy
           chmod 600 ~/.ssh/mpay_deploy
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          printf '%s\\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           ssh-keygen -lf ~/.ssh/known_hosts
 
-      - name: Generate protected runtime environment
-        env:
-          DB_PASSWORD: ${{ secrets.MPAY_DB_PASSWORD }}
-          JWT_SECRET: ${{ secrets.MPAY_JWT_SECRET }}
-          ADMIN_JWT_SECRET: ${{ secrets.MPAY_ADMIN_JWT_SECRET }}
-          MERCHANT_JWT_SECRET: ${{ secrets.MPAY_MERCHANT_JWT_SECRET }}
-        run: |
-          set -euo pipefail
-          test -n "${DB_PASSWORD}"
-          test -n "${JWT_SECRET}"
-          test -n "${ADMIN_JWT_SECRET}"
-          test -n "${MERCHANT_JWT_SECRET}"
-          python3 - <<'PY'
-          import json, os
-          values = {
-              "DB_HOST": "mysql",
-              "DB_PORT": "3306",
-              "DB_DATABASE": "mpay_v2",
-              "DB_USERNAME": "mpay_v2",
-              "DB_PASSWORD": os.environ["DB_PASSWORD"],
-              "REDIS_HOST": "redis",
-              "REDIS_PORT": "6379",
-              "REDIS_PASSWORD": "",
-              "REDIS_DATABASE": "0",
-              "QUEUE_DATABASE": "1",
-              "CACHE_DRIVER": "redis",
-              "AUTH_JWT_ISSUER": "mpay",
-              "AUTH_JWT_LEEWAY": "30",
-              "AUTH_JWT_SECRET": os.environ["JWT_SECRET"],
-              "AUTH_ADMIN_JWT_SECRET": os.environ["ADMIN_JWT_SECRET"],
-              "AUTH_ADMIN_JWT_TTL": "86400",
-              "AUTH_ADMIN_JWT_REDIS_PREFIX": "mpay:auth:admin:",
-              "AUTH_MERCHANT_JWT_SECRET": os.environ["MERCHANT_JWT_SECRET"],
-              "AUTH_MERCHANT_JWT_TTL": "86400",
-              "AUTH_MERCHANT_JWT_REDIS_PREFIX": "mpay:auth:merchant:",
-          }
-          with open(".env.deploy", "w", encoding="utf-8") as f:
-              for key, value in values.items():
-                  f.write(f"{key}={json.dumps(value, ensure_ascii=False)}\n")
-          os.chmod(".env.deploy", 0o600)
-          PY
-
-      - name: Upload runtime environment and release archive
+      - name: Upload archive to /opt/mpay-v2 and verify checksum
         env:
           SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
-            'mkdir -p /opt/mpay-v2/releases /opt/mpay-v2/shared/runtime && chmod 700 /opt/mpay-v2/shared'
+            'mkdir -p /opt/mpay-v2'
           scp -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            .env.deploy root@"${SSH_HOST}":/opt/mpay-v2/shared/.env.tmp
-          scp -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "${ARCHIVE_NAME}" root@"${SSH_HOST}":"/opt/mpay-v2/${ARCHIVE_NAME}"
+            "${ARCHIVE_NAME}" "${ARCHIVE_NAME}.sha256" \
+            root@"${SSH_HOST}":/opt/mpay-v2/
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
-            'chmod 600 /opt/mpay-v2/shared/.env.tmp && mv /opt/mpay-v2/shared/.env.tmp /opt/mpay-v2/shared/.env'
-
-      - name: Extract release, build PHP image, and start MPAY V2
-        env:
-          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/mpay_deploy \
-            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=15 root@"${SSH_HOST}" \
-            "set -euo pipefail
-             RELEASE_DIR='/opt/mpay-v2/releases/${GITHUB_SHA}'
-             mkdir -p \"\$RELEASE_DIR\"
-             tar -xzf '/opt/mpay-v2/${ARCHIVE_NAME}' -C \"\$RELEASE_DIR\"
-             test -f \"\$RELEASE_DIR/deploy/php.Dockerfile\"
-             docker network inspect 1panel-network >/dev/null
-             docker build -t 'mpay-v2-php:${GITHUB_SHA}' -f \"\$RELEASE_DIR/deploy/php.Dockerfile\" \"\$RELEASE_DIR\"
-             docker rm -f mpay-v2-php >/dev/null 2>&1 || true
-             docker run -d --name mpay-v2-php --restart unless-stopped \
-               --network 1panel-network \
-               -p 127.0.0.1:18787:8787 \
-               -v /opt/mpay-v2/shared/.env:/app/.env:ro \
-               -v /opt/mpay-v2/shared/runtime:/app/runtime \
-               'mpay-v2-php:${GITHUB_SHA}'
-             for i in \$(seq 1 30); do
-               if ! docker inspect -f '{{.State.Running}}' mpay-v2-php | grep -q true; then
-                 docker logs --tail 100 mpay-v2-php
-                 exit 1
-               fi
-               CODE=\$(curl -sS -o /tmp/mpay-v2-health.txt -w '%{http_code}' http://127.0.0.1:18787/ || true)
-               if [ \"\$CODE\" -ge 200 ] && [ \"\$CODE\" -lt 400 ]; then
-                 echo \"MPAY V2 HTTP check passed: \$CODE\"
-                 docker ps --filter name='^/mpay-v2-php$'
-                 exit 0
-               fi
-               sleep 2
-             done
-             docker logs --tail 100 mpay-v2-php
-             echo 'MPAY V2 HTTP check timed out'
-             exit 1"
+            "cd /opt/mpay-v2 && sha256sum -c '${ARCHIVE_NAME}.sha256' && tar -tzf '${ARCHIVE_NAME}' > /dev/null && echo 'MPAY V2 archive upload and verification passed.'"
