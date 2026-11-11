@@ -284,7 +284,7 @@ docker exec "$ACTIVE" test -s /app/runtime/install.lock
 docker exec "$ACTIVE" test -s /data/keys/epay-platform-private.pem
 docker exec "$ACTIVE" test -s /data/keys/epay-platform-public.pem
 docker exec "$ACTIVE" php -r 'require "/app/vendor/autoload.php"; echo "autoload OK\n";'
-docker top "$ACTIVE" -eo comm | grep -q php
+docker inspect -f '{{.State.Running}}' "$ACTIVE" | grep -qx true || fail "MPAY container is not running"
 TABLE_COUNT="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mpay';")"
 [ "$TABLE_COUNT" -gt 0 ] || fail "Database migration produced no tables"
 INSTALL_STATE="$("${MYSQL[@]}" -e "SELECT config_value FROM mpay.ma_system_config WHERE config_key='install_status' LIMIT 1;")"
