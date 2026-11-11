@@ -1,0 +1,32 @@
+name: MPAY V2 1Panel staging upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-upload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/manual-payment-link
+          persist-credentials: false
+      - name: Verify PHP syntax
+        run: |
+          set -euo pipefail
+          find app config support database -type f -name '*.php' -print0 | xargs -0 -n1 -P4 php -l > /dev/null
+      - name: Package deployable source
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude=.github --exclude=.env --exclude=runtime --exclude=vendor -czf /tmp/mpay-v2-release.tgz .
+          mv /tmp/mpay-v2-release.tgz mpay-v2-release.tgz
+      - name: Upload release archive to 1Panel (no activation)
+        env:
+          PANEL_URL: ${{ secrets.PANEL_URL }}
+          PANEL_API_KEY: ${{ secrets.PANEL_API_KEY }}
+          PANEL_V: ${{ vars.PANEL_V }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: bash .github/scripts/deploy-mpay.sh
