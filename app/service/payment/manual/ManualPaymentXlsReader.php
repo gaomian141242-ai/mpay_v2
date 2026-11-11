@@ -7,7 +7,7 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 
 /**
- * WPS Excel 97-2003 (.xls) 固定金额支付链接导入解析。
+ * WPS Excel (.xlsx) 固定金额支付链接导入解析。
  * 只读取首张工作表，第一行为固定中文表头。
  */
 class ManualPaymentXlsReader
@@ -18,26 +18,26 @@ class ManualPaymentXlsReader
     public function read(string $path, string $sourceCode, int $channelId): array
     {
         if (!is_file($path) || !is_readable($path)) {
-            throw new InvalidArgumentException('上传的 XLS 文件不可读取');
+            throw new InvalidArgumentException('上传的 XLSX 文件不可读取');
         }
         if (!class_exists(IOFactory::class)) {
             throw new InvalidArgumentException('服务器未安装 PhpSpreadsheet 依赖');
         }
 
-        $reader = IOFactory::createReader('Xls');
+        $reader = IOFactory::createReader('Xlsx');
         $reader->setReadDataOnly(true);
         $book = $reader->load($path);
         try {
             $sheet = $book->getSheet(0);
             $lastRow = $sheet->getHighestDataRow();
             if ($lastRow < 2 || $lastRow > 501) {
-                throw new InvalidArgumentException('每份 XLS 必须包含 1 至 500 条数据');
+                throw new InvalidArgumentException('每份 XLSX 必须包含 1 至 500 条数据');
             }
 
             foreach (self::HEADERS as $index => $header) {
                 $value = trim((string) $sheet->getCell(Coordinate::stringFromColumnIndex($index + 1).'1')->getValue());
                 if ($value !== $header) {
-                    throw new InvalidArgumentException('XLS 第一行表头不正确，应为：'.implode('、', self::HEADERS));
+                    throw new InvalidArgumentException('XLSX 第一行表头不正确，应为：'.implode('、', self::HEADERS));
                 }
             }
 
@@ -80,7 +80,7 @@ class ManualPaymentXlsReader
                 ];
             }
             if ($items === []) {
-                throw new InvalidArgumentException('XLS 没有可导入的数据');
+                throw new InvalidArgumentException('XLSX 没有可导入的数据');
             }
             return $items;
         } finally {
