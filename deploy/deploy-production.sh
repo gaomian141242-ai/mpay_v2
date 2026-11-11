@@ -200,18 +200,19 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [ -n "$STATUS" ] || { docker logs "$CANDIDATE" --tail 100; fail "Install status endpoint did not become ready"; }
-# A prior failed attempt may have written install.lock before the database was created.
-# Only clear that stale lock when MySQL independently confirms the target schema has ZERO tables.
-if printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == false and .data.database_exists == false and .data.core_tables == [] and .data.lock_file_exists == true' >/dev/null 2>&1; then
-  EXISTING_TABLES="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mpay';")"
-  if [ "$EXISTING_TABLES" = "0" ]; then
+# InstallLock may be left behind by an interrupted first install. The database
+# can contain ma_migrations or partially-created tables; do not require the schema
+# to be completely empty. Resume only when NONE of the four core application tables exists.
+if printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == true and .data.database_installed == false and .data.database_exists == false and .data.lock_file_exists == true' >/dev/null 2>&1; then
+  CORE_TABLE_COUNT="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='mpay' AND table_name IN ('ma_admin_user','ma_pay_order','ma_system_config','ma_payment_plugin');")"
+  if [ "$CORE_TABLE_COUNT" = "0" ]; then
     docker exec "$CANDIDATE" rm -f /app/runtime/install.lock
     STATUS="$(curl -fsS http://127.0.0.1:18787/adminapi/install/status)"
     printf '%s' "$STATUS" | jq -e '.code == 200 and .data.installed == false and .data.lock_file_exists == false' >/dev/null \
-      || fail "Could not safely clear stale install lock for an empty database"
-    log "Removed stale install.lock; MySQL confirmed database mpay contains zero tables"
+      || fail "Could not clear stale install.lock after confirming core tables are absent"
+    log "Removed stale install.lock; no core application tables exist. Existing partial migration tables will be preserved and migrations resumed."
   else
-    fail "Stale install lock found but database mpay already contains tables; refusing automatic reset"
+    fail "Install lock is stale but one or more core application tables exist; refusing automatic reset"
   fi
 fi
 
