@@ -108,95 +108,11 @@ jobs:
           ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
             "cd /opt/mpay-v2 && sha256sum -c '${ARCHIVE_NAME}.sha256' && tar -tzf '${ARCHIVE_NAME}' > /dev/null && echo 'MPAY V2 archive upload and verification passed.'"
 
-      - name: Read-only production inventory and database preflight
+      - name: Deploy MPAY V2 production stack, initialize and verify
         env:
           SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" 'bash -s' <<'REMOTE'
-          set -euo pipefail
-
-          echo "=== PHP / WEBMAN PROCESSES ==="
-          ps -eo pid,ppid,comm | awk 'NR == 1 || tolower($0) ~ /php|webman|supervisord/'
-
-          echo "=== PHP CLI ON HOST ==="
-          if command -v php >/dev/null 2>&1; then php -v | head -n 2; else echo "No host PHP CLI"; fi
-
-          echo "=== OPENRESTY CONFIG FILES ==="
-          for base in /opt/1panel/www/conf.d /opt/1panel/apps/openresty/openresty/conf; do
-            [ -d "$base" ] || continue
-            find "$base" -type f \( -name '*.conf' -o -name 'nginx.conf' \) -print
-          done
-
-          echo "=== OPENRESTY ROUTING DIRECTIVES ==="
-          while IFS= read -r file; do
-            matches=$(grep -nE '^[[:space:]]*(listen|server_name|proxy_pass|fastcgi_pass|root|include)[[:space:]]' "$file" 2>/dev/null || true)
-            if [ -n "$matches" ]; then
-              echo "--- $file ---"
-              printf '%s\n' "$matches"
-            fi
-          done < <(find /opt/1panel/www/conf.d /opt/1panel/apps/openresty/openresty/conf -type f \( -name '*.conf' -o -name 'nginx.conf' \) 2>/dev/null | sort)
-
-          echo "=== MPAY ENV FILE METADATA AND VARIABLE NAMES ==="
-          ENV_FILE=/opt/mpay-v2/releases/v1/.env
-          if [ -f "$ENV_FILE" ]; then
-            stat -c 'Path=%n Mode=%a Owner=%U:%G Size=%s' "$ENV_FILE"
-            awk -F= '/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/{key=$1; gsub(/[[:space:]]/,"",key); print key}' "$ENV_FILE" | sort -u
-            for key in DB_HOST DB_PORT DB_DATABASE REDIS_HOST REDIS_PORT REDIS_DATABASE; do
-              value=$(awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); gsub(/^["\047]|["\047]$/, ""); print; exit}' "$ENV_FILE")
-              [ -n "$value" ] && printf '%s=%s\n' "$key" "$value" || true
-            done
-          else
-            echo "MPAY .env not found at expected v1 path"
-          fi
-
-          echo "=== WEBMAN INSTALL LOCK ==="
-          if [ -f /opt/mpay-v2/releases/v1/runtime/install.lock ]; then
-            stat -c 'Install lock exists: %n mode=%a owner=%U:%G size=%s' /opt/mpay-v2/releases/v1/runtime/install.lock
-          else
-            echo "Install lock missing at /opt/mpay-v2/releases/v1/runtime/install.lock"
-          fi
-          echo "=== MYSQL CONTAINER AND DATABASE MIGRATION STATUS ==="
-          MYSQL_CID=$(docker ps -q --filter 'name=1Panel-mysql' | head -n 1)
-          if [ -n "$MYSQL_CID" ] && [ -f "$ENV_FILE" ]; then
-            DB_NAME=$(awk -F= '$1 == "DB_DATABASE" {sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); gsub(/^["\047]|["\047]$/, ""); print; exit}' "$ENV_FILE")
-            ROOT_PW=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$MYSQL_CID" | sed -n 's/^MYSQL_ROOT_PASSWORD=//p' | head -n 1)
-            if [[ "$DB_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-              if [ -n "$ROOT_PW" ]; then
-                MYSQL=(docker exec -e "MYSQL_PWD=$ROOT_PW" "$MYSQL_CID" mysql -uroot -N -B)
-              else
-                MYSQL=(docker exec "$MYSQL_CID" mysql -uroot -N -B)
-              fi
-              if "${MYSQL[@]}" -e "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${DB_NAME}';" | grep -Fxq "$DB_NAME"; then
-                echo "Database ${DB_NAME}: exists"
-                TABLE_COUNT=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}';")
-                echo "Table count: ${TABLE_COUNT}"
-                MIGRATION_TABLE=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='ma_migrations';")
-                if [ "$MIGRATION_TABLE" = "1" ]; then
-                  echo "ma_migrations: exists"
-                  "${MYSQL[@]}" -e "SELECT version, name, batch, executed_at FROM ${DB_NAME}.ma_migrations ORDER BY version;"
-                else
-                  echo "ma_migrations: absent"
-                fi
-                  echo "Core MPAY tables:"
-                  "${MYSQL[@]}" -e "SELECT table_name FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name IN ('ma_admin_user','ma_pay_order','ma_system_config','ma_payment_plugin') ORDER BY table_name;"
-              else
-                echo "Configured database ${DB_NAME}: not found in MySQL"
-              fi
-            else
-              echo "DB_DATABASE is empty or contains unsupported characters; skipped DB query"
-            fi
-            unset ROOT_PW MYSQL_PWD MYSQL
-          else
-            echo "MySQL container or MPAY .env unavailable; skipped migration query"
-          fi
-
-          echo "=== RUNNING CONTAINERS AND NETWORKS ==="
-          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-          docker network ls
-          echo "=== MPAY DIRECTORIES AND ENV PERMISSIONS ==="
-          find /opt/mpay-v2 -maxdepth 2 -type d -printf '%m %u:%g %p\n' 2>/dev/null | sort
-          find /opt/mpay-v2 -maxdepth 5 -type f -name '.env' -printf '%m %u:%g %p\n' 2>/dev/null | sort
-          echo "=== PREFLIGHT COMPLETE ==="
-          echo "Read-only only: no files, environment values, databases, containers, networks, or services were modified."
-          REMOTE
+          RELEASE="/opt/mpay-v2/releases/${SOURCE_SHA}"
+          ssh -i ~/.ssh/mpay_deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes root@"${SSH_HOST}" \
+            "mkdir -p '${RELEASE}' && tar -xzf '/opt/mpay-v2/${ARCHIVE_NAME}' -C '${RELEASE}' && test -f '${RELEASE}/deploy/deploy-production.sh' && chmod 700 '${RELEASE}/deploy/deploy-production.sh' && SOURCE_SHA='${SOURCE_SHA}' SSH_HOST='${SSH_HOST}' bash '${RELEASE}/deploy/deploy-production.sh'"
