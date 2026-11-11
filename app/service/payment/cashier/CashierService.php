@@ -712,6 +712,12 @@ class CashierService extends BaseService
      */
     private function buildPaymentPagePath(string $payNo): string
     {
+        // 仅手动链接插件使用独立承接页；其他支付方式保持原有入口。
+        $payOrder = $this->payOrderRepository->findByPayNo($payNo);
+        if ($payOrder && (string) ($payOrder->plugin_code ?? '') === 'manual_payment_link') {
+            return '/manual-payment/' . rawurlencode($payNo);
+        }
+
         return '/payment/' . rawurlencode($payNo);
     }
 
