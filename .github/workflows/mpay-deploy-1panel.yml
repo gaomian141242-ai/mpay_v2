@@ -74,7 +74,7 @@ jobs:
         with:
           name: mpay-v2-${{ env.SOURCE_SHA }}
           path: |
-            \${{ env.ARCHIVE_NAME }}
+${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
           if-no-files-found: error
           retention-days: 14
