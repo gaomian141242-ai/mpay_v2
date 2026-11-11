@@ -36,17 +36,17 @@ class ManualPaymentQueryLeaseService
                 ->where('inventory.device_port', $devicePort)
                 ->where(function ($q) use ($now) {
                     $q->where(function ($pending) use ($now) {
-                        $pending->where('status', 'pending')
+                        $pending->where('ma_manual_payment_query_task.status', 'pending')
                             ->where(function ($retry) use ($now) {
-                                $retry->whereNull('next_retry_at')->orWhere('next_retry_at', '<=', $now);
+                                $retry->whereNull('ma_manual_payment_query_task.next_retry_at')->orWhere('ma_manual_payment_query_task.next_retry_at', '<=', $now);
                             });
                     })->orWhere(function ($running) use ($now) {
-                        $running->where('status', 'running')->where('lease_until', '<=', $now);
+                        $running->where('ma_manual_payment_query_task.status', 'running')->where('ma_manual_payment_query_task.lease_until', '<=', $now);
                     });
                 })
                 ->orderBy('ma_manual_payment_query_task.id')
                 ->lock('FOR UPDATE SKIP LOCKED')
-                ->first();
+                ->first(['ma_manual_payment_query_task.*']);
             if ($task === null) {
                 return null;
             }
