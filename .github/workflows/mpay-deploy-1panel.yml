@@ -1,0 +1,123 @@
+name: MPAY V2 build and stage upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mpay-v2-stage-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout deployment branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/manual-payment-link
+          persist-credentials: false
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, redis, mbstring, zip, xml, gd, fileinfo, curl, bcmath
+          coverage: none
+          tools: composer:v2
+
+      - name: Validate PHP syntax
+        run: |
+          set -euo pipefail
+          find app config support database -type f -name '*.php' -print0 |
+            xargs -0 -r -n1 -P4 php -l > /dev/null
+          echo "PHP syntax checks passed."
+
+      - name: Install production Composer dependencies
+        run: |
+          set -euo pipefail
+          composer validate --no-check-publish
+          composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+          composer check-platform-reqs --no-dev
+
+      - name: Build deployment archive
+        run: |
+          set -euo pipefail
+          test -d vendor
+          test -f public/index.html
+          test -f composer.lock
+          ARCHIVE_NAME="mpay-v2-${GITHUB_SHA}.tgz"
+          tar \
+            --exclude='./app/command/tests' \
+            --exclude='./runtime' \
+            --exclude='./.git' \
+            --exclude='./.github' \
+            --exclude='./tests' \
+            --exclude='./.env' \
+            -czf "${ARCHIVE_NAME}" \
+            app config database public support vendor \
+            composer.json composer.lock webman start.php .env.example
+          tar -tzf "${ARCHIVE_NAME}" > /dev/null
+          sha256sum "${ARCHIVE_NAME}"
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Keep build archive as a GitHub Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpay-v2-${{ github.sha }}
+          path: mpay-v2-${{ github.sha }}.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Configure verified SSH
+        env:
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.MPAY_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.MPAY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_HOST}" && test -n "${SSH_PRIVATE_KEY}" && test -n "${SSH_KNOWN_HOSTS}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/mpay_deploy
+          chmod 600 ~/.ssh/mpay_deploy
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -lf ~/.ssh/known_hosts
+
+      - name: Verify staging directory and upload archive
+        env:
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/mpay_deploy \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            root@"${SSH_HOST}" \
+            'test -d /opt/mpay-v2 && test -w /opt/mpay-v2 && df -h /opt/mpay-v2'
+          scp -i ~/.ssh/mpay_deploy \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "${ARCHIVE_NAME}" \
+            root@"${SSH_HOST}":"/opt/mpay-v2/${ARCHIVE_NAME}"
+
+      - name: Verify uploaded archive checksum
+        env:
+          SSH_HOST: ${{ secrets.MPAY_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          ARCHIVE_SHA="$(sha256sum "${ARCHIVE_NAME}" | awk '{print $1}')"
+          ssh -i ~/.ssh/mpay_deploy \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            root@"${SSH_HOST}" \
+            "cd /opt/mpay-v2 && printf '%s  %s\\n' '${ARCHIVE_SHA}' '${ARCHIVE_NAME}' | sha256sum -c - && ls -lh '${ARCHIVE_NAME}'"
+          echo "Upload verified. Archive is staged only; it has not been extracted."
