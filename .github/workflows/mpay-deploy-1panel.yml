@@ -36,6 +36,11 @@ jobs:
             xargs -0 -r -n1 -P4 php -l > /dev/null
           echo "PHP syntax checks passed."
 
+      - name: Resolve missing Spreadsheet dependency in CI lockfile
+        run: |
+          set -euo pipefail
+          composer update phpoffice/phpspreadsheet --with-dependencies --no-interaction --no-progress
+
       - name: Install production Composer dependencies
         run: |
           set -euo pipefail
