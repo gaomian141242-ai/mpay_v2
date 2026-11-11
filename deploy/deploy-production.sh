@@ -98,11 +98,7 @@ if [ -z "$REDIS_PASSWORD" ]; then
   REDIS_PASSWORD="$(docker exec "$REDIS_CID" sh -c '
     for file do
       [ -r "$file" ] || continue
-      awk '''tolower($1) == "requirepass" {
-        $1 = ""; sub(/^[[:space:]]+/, "");
-        gsub(/^["\\047]|["\\047]$/, "");
-        print; exit
-      }''' "$file"
+      awk -v key=requirepass "\$1 == key {print \$2; exit}" "$file"
     done
   ' sh "${REDIS_CONFIG_FILES[@]}" 2>/dev/null | head -n1 || true)"
 fi
@@ -119,7 +115,7 @@ if [ -z "$REDIS_PASSWORD" ]; then
         value="$(sed -n -E 's/^(REDIS_PASSWORD|REDIS_PASS|REDIS_ROOT_PASSWORD)=//p' "$env_file" | head -n1)"
         value="${value%\"}"; value="${value#\"}"
         value="${value%\'}"; value="${value#\'}"
-        if [ -n "$value" ]; then REDIS_PASSWORD="$value"; break 2; fi
+        if [ -n "$value" ]; then REDIS_PASSWORD="$value"; break 3; fi
       done
     done
   done < <(docker inspect "$REDIS_CID" | jq -r '.[0].Mounts[]?.Source')
