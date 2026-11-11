@@ -4,6 +4,7 @@ namespace app\http\api\controller\cashier;
 
 use app\common\base\BaseController;
 use app\service\payment\manual\ManualPaymentQueryLeaseService;
+use app\service\payment\manual\ManualPaymentQueryReportService;
 use InvalidArgumentException;
 use support\Request;
 use support\Response;
@@ -15,7 +16,8 @@ use support\Response;
 class ManualPaymentDeviceController extends BaseController
 {
     public function __construct(
-        protected ManualPaymentQueryLeaseService $leases
+        protected ManualPaymentQueryLeaseService $leases,
+        protected ManualPaymentQueryReportService $reports
     ) {
     }
 
@@ -36,4 +38,26 @@ class ManualPaymentDeviceController extends BaseController
             return $this->fail($e->getMessage(), 422);
         }
     }
+    public function report(Request $request): Response
+    {
+        $expected = (string) env('MANUAL_PAYMENT_DEVICE_API_KEY', '');
+        $supplied = (string) $request->header('X-Manual-Device-Key', '');
+        if (strlen($expected) < 32 || $supplied === '' || !hash_equals($expected, $supplied)) {
+            return $this->fail('设备认证失败', 401);
+        }
+        try {
+            $data = $this->reports->report(
+                (string) $request->post('device_id', ''),
+                (int) $request->post('task_id', 0),
+                (string) $request->post('lease_token', ''),
+                (string) $request->post('result', ''),
+                (string) $request->post('online_order_no', ''),
+                (string) $request->post('device_port', '')
+            );
+            return $this->success($data);
+        } catch (InvalidArgumentException $e) {
+            return $this->fail($e->getMessage(), 422);
+        }
+    }
+
 }
