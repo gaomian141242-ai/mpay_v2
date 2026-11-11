@@ -48,6 +48,7 @@ Route::group('/payment', function () use ($serveCashierApp) {
 Route::group('/api/manual-payment', function () {
     Route::get('/detail', [ManualPaymentCheckoutController::class, 'detail'])->name('manualPaymentDetail');
     Route::get('/status', [ManualPaymentCheckoutController::class, 'status'])->name('manualPaymentStatus');
+    Route::post('/request-query', [ManualPaymentCheckoutController::class, 'requestQuery'])->name('manualPaymentRequestQuery');
 })->middleware([Cors::class]);
 
 // 收银台接口路由。
