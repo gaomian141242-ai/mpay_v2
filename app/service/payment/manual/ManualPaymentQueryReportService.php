@@ -60,8 +60,9 @@ class ManualPaymentQueryReportService
             }
 
             $now = date('Y-m-d H:i:s');
-            // paid 仅表示设备声称查到付款；后续必须独立核验证据才能调用支付生命周期。
-            $status = $result === 'paid' ? 'unknown' : $result;
+            // 未核验的 paid 不得推进支付生命周期；unpaid/unknown 有限次数重查。
+            $decision = ManualPaymentReportPolicy::outcome($result, (int) $task->attempt);
+            $status = $decision['status'];
             Db::table('ma_manual_payment_query_task')->where('id', $taskId)->update([
                 'status' => $status,
                 'result_payload' => json_encode([
@@ -71,7 +72,9 @@ class ManualPaymentQueryReportService
                 ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
                 'lease_token' => '',
                 'lease_until' => null,
-                'finished_at' => $now,
+                'next_retry_at' => $decision['retry_seconds'] === null ? null : date('Y-m-d H:i:s', time() + $decision['retry_seconds']),
+                'last_error' => $decision['reason'],
+                'finished_at' => $status === 'pending' ? null : $now,
                 'updated_at' => $now,
             ]);
 
