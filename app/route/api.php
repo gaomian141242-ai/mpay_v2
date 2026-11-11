@@ -8,6 +8,19 @@ use app\http\api\controller\epay\EpayV2Controller;
 use app\http\api\controller\payment\PaymentOnboardingNotifyController;
 use app\http\api\controller\system\SystemPublicConfigController;
 
+// 独立手动支付承接页：只读取当前支付单，不改变原收银台的其他支付方式。
+Route::get('/manual-payment/{payNo:[A-Za-z0-9_-]+}', static function () {
+    $path = public_path('manual-payment/index.html');
+    if (!is_file($path)) {
+        return response('Manual payment page not found', 404);
+    }
+    return response(file_get_contents($path), 200, [
+        'Content-Type' => 'text/html; charset=utf-8',
+        'Cache-Control' => 'no-store, private',
+        'Referrer-Policy' => 'no-referrer',
+    ]);
+})->name('manualPaymentPage')->setParams(['real_name' => '手动支付链接承接页']);
+
 // 收银台页面路由。
 $serveCashierApp = static function () {
     $indexPath = public_path('cashier/index.html');
