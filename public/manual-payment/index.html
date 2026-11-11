@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>支付收银台</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#1f1f1f;color:#f4f4f4;font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif}.panel{max-width:430px;min-height:100vh;margin:auto;padding:16px 12px 26px;background:#303030;text-align:center}.heading{font-size:21px;font-weight:700;padding:0 0 26px;border-bottom:1px solid #383838}.heading span{color:#2384ff;margin-right:8px}.label{margin:24px 0 12px;color:#ddd;font-size:18px}.amount{font-size:32px;font-weight:800;letter-spacing:.4px}.hint{color:#aaa;font-size:15px;margin:14px 0 18px}.rule{height:4px;background:#252525;margin:20px 0 16px}.btn{width:100%;border:0;border-radius:14px;padding:17px 12px;background:#1976f9;color:#fff;font-size:20px;font-weight:700;cursor:pointer}.btn:disabled{opacity:.5;cursor:not-allowed}.between{margin:7px 0 18px;color:#bbb;font-size:16px}.status{margin-top:20px;color:#cbd5e1;line-height:1.5;min-height:24px}.error{color:#ffb4b4}a{color:#c5ddff}
+</style>
+</head>
+<body><main class="panel">
+<div class="heading"><span>▣</span>支付收银台</div>
+<div class="label">订单支付金额</div>
+<div class="amount" id="amount">¥ --</div>
+<div class="hint">请以当前订单实际金额为准</div>
+<div class="rule"></div>
+<button class="btn" id="pay" disabled>↗ 点击支付</button>
+<div class="between">使用支付宝APP或对应支付方式完成付款</div>
+<button class="btn" id="done" disabled>✓ 支付完成</button>
+<div class="between">支付完成后返回此页面点击支付完成</div>
+<div id="status" class="status" role="status" aria-live="polite">正在加载订单…</div>
+</main>
+<script>
+(() => {
+  'use strict';
+  const payNo = decodeURIComponent(location.pathname.split('/').pop() || '');
+  const amount = document.getElementById('amount');
+  const pay = document.getElementById('pay');
+  const done = document.getElementById('done');
+  const status = document.getElementById('status');
+  let paymentUrl = '';
+  function message(text, error=false) { status.textContent=text; status.className='status'+(error?' error':''); }
+  async function get(path) {
+    const res=await fetch(path+'?pay_no='+encodeURIComponent(payNo),{credentials:'same-origin',cache:'no-store'});
+    if(!res.ok) throw new Error('订单接口暂时不可用');
+    const json=await res.json();
+    if(json.code!==200 && json.code!==0) throw new Error(json.message||json.msg||'订单读取失败');
+    return json.data;
+  }
+  function handleStatus(code) {
+    if(code===2){pay.disabled=true;done.disabled=true;message('系统已确认支付成功');return;}
+    if([3,4,5].includes(code)){pay.disabled=true;done.disabled=true;message('订单已结束，请返回原收银台查看订单状态',true);return;}
+    message('尚未确认到账，请勿重复支付。确认服务接入后可在此查询结果。');
+  }
+  if(!/^[A-Za-z0-9_-]{1,64}$/.test(payNo)){message('支付单号无效',true);return;}
+  get('/api/cashier/pay-order').then(data=>{
+    if(data?.presentation?.pay_product!=='manual_payment_link') throw new Error('不是手动支付链接订单');
+    const url=data?.presentation?.pay_params?.payment_url||'';
+    const parsed=new URL(url);
+    if(parsed.protocol!=='https:' || parsed.username || parsed.password) throw new Error('支付链接无效');
+    paymentUrl=parsed.href;
+    amount.textContent='¥ '+(Number(data.order.amount)/100).toFixed(2);
+    pay.disabled=Number(data.order.status)!==1 && Number(data.order.status)!==0;
+    done.disabled=pay.disabled;
+    if(pay.disabled) handleStatus(Number(data.order.status)); else message('请点击支付，完成后返回本页查询状态');
+  }).catch(e=>message(e.message,true));
+  pay.addEventListener('click',()=>{if(paymentUrl) window.open(paymentUrl,'_blank','noopener,noreferrer');});
+  done.addEventListener('click',async()=>{
+    done.disabled=true;
+    message('正在查询系统支付状态…');
+    try{const data=await get('/api/cashier/pay-order-status');handleStatus(Number(data.status));if([0,1].includes(Number(data.status)))done.disabled=false;}
+    catch(e){message(e.message,true);done.disabled=false;}
+  });
+})();
+</script>
+</body></html>
